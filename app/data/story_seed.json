@@ -1,0 +1,42 @@
+{
+  "setting": "Un manoir isolé au sommet d'une colline.",
+  "context": "Un dîner mondain réunit une dizaine d'invités. La tempête fait rage dehors.",
+  "victim": "Un industriel influent, récemment compromis dans un scandale.",
+  "tone": "Sombre, dramatique.",
+
+  "culprit_missions": [
+    {
+      "id": "mislead_investigation",
+      "text": "Ton objectif est de détourner l'attention en lançant des soupçons sur un autre joueur.",
+      "points": 50
+    }
+  ],
+
+  "missions": [
+    {
+      "id": "collect_letter",
+      "text": "Trouver une lettre compromettante dans la bibliothèque.",
+      "points": 10
+    },
+    {
+      "id": "defend_alibi",
+      "text": "Défendre publiquement un autre joueur quand il sera accusé.",
+      "points": 10
+    },
+    {
+      "id": "hide_item",
+      "text": "Faire disparaître un objet important de la scène de crime.",
+      "points": 10
+    },
+    {
+      "id": "spread_rumor",
+      "text": "Lancer une rumeur sur un autre invité pour détourner l'attention.",
+      "points": 10
+    },
+    {
+      "id": "steal_key",
+      "text": "Mettre la main sur la clé du bureau et la garder secrètement.",
+      "points": 10
+    }
+  ]
+}

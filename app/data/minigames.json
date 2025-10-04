@@ -1,0 +1,24 @@
+{
+	"catalog": [
+	 {
+		"id": "quizz_rapide",
+		"mode": "team",
+		"duration_s": 120,
+		"scoring": "points_desc",
+		"reward_policy": [
+		 { "rank": 1, "clue_kind": "crucial", "target": "team", "count": 1 },
+		 { "rank": 2, "clue_kind": "ambiguous", "target": "team", "count": 1 }
+		]
+	 },
+	 {
+		"id": "enigme_flash",
+		"mode": "solo",
+		"duration_s": 90,
+		"scoring": "points_desc",
+		"reward_policy": [
+		 { "rank": 1, "clue_kind": "crucial", "target": "player", "count": 1 },
+		 { "rank": 2, "clue_kind": "red_herrings", "target": "player", "count": 1 }
+		]
+	 }
+	]
+}

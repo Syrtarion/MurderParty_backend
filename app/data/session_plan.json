@@ -1,0 +1,8 @@
+{
+  "session_id": "nouvel_an_2025",
+  "games_sequence": [
+    { "id": "quizz_rapide", "round": 1 },
+    { "id": "enigme_flash", "round": 2 },
+    { "id": "quizz_rapide", "round": 3 }
+  ]
+}

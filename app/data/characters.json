@@ -1,0 +1,43 @@
+{
+  "characters": [
+    {
+      "id": "inspecteur_lenoir",
+      "name": "Inspecteur Lenoir",
+      "bio": "Enquêteur chevronné, discret et méthodique.",
+      "objectives": [
+        "Identifier l'arme du crime",
+        "Mettre à l'épreuve les alibis"
+      ],
+      "secrets": [
+        "Il connaît la victime depuis longtemps"
+      ],
+      "tags": ["enquête", "autorité"]
+    },
+    {
+      "id": "heir_ambitieux",
+      "name": "L'héritier ambitieux",
+      "bio": "Toujours à court d'argent, mais plein de projets.",
+      "objectives": [
+        "Découvrir le mobile probable",
+        "Récupérer un objet caché"
+      ],
+      "secrets": [
+        "Endetté auprès d'un usurier"
+      ],
+      "tags": ["fortune", "pression"]
+    },
+    {
+      "id": "confidente_mysterieuse",
+      "name": "La confidente mystérieuse",
+      "bio": "On lui dit tout, mais elle ne dit rien.",
+      "objectives": [
+        "Collecter trois indices sur la scène",
+        "Protéger un allié d'une accusation"
+      ],
+      "secrets": [
+        "Détient une lettre compromettante"
+      ],
+      "tags": ["réseau", "secret"]
+    }
+  ]
+}
