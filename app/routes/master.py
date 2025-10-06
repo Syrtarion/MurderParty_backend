@@ -6,7 +6,7 @@ from app.config.settings import settings
 from app.services.narrative_core import NARRATIVE
 from app.services.game_state import GAME_STATE
 from app.services.llm_engine import generate_indice
-from app.routes.websocket import manager
+from app.services.ws_manager import WS
 
 router = APIRouter(prefix="/master", tags=["master"], dependencies=[Depends(mj_required)])
 

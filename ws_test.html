@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="fr">
+<meta charset="UTF-8">
+<title>Test WS</title>
+<body>
+  <h1>Test WebSocket Murder Party</h1>
+  <script>
+    const pid = prompt("Player ID ?");
+    const ws = new WebSocket("ws://localhost:8000/ws");
+    ws.onopen = () => {
+      console.log("✅ Connecté pour", pid);
+      ws.send(JSON.stringify({ type: "identify", player_id: pid }));
+    };
+    ws.onmessage = (e) => console.log("📩 Message:", e.data);
+    ws.onerror = (e) => console.error("❌ Erreur WS:", e);
+  </script>
+</body>
+</html>

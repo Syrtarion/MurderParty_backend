@@ -5,7 +5,8 @@ from app.services.minigame_runtime import RUNTIME
 from app.services.game_state import GAME_STATE
 from app.services.narrative_core import NARRATIVE
 from app.services.llm_engine import generate_indice
-from app.routes.websocket import manager
+from app.services.ws_manager import WS, ws_send_to_player, ws_broadcast
+
 
 
 def _rank(scores: Dict[str, int]) -> List[Tuple[str, int]]:

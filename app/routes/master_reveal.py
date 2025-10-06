@@ -5,6 +5,7 @@ from app.deps.auth import mj_required
 from app.services.game_state import GAME_STATE
 from app.services.narrative_core import NARRATIVE
 from app.services.mission_service import MISSION_SVC
+from app.services.ws_manager import WS
 
 router = APIRouter(
     prefix="/master",
@@ -13,15 +14,11 @@ router = APIRouter(
 )
 
 class RevealPayload(BaseModel):
-    notify_players: bool = True  # si True, log/broadcast (WS) que missions sont prêtes
+    notify_players: bool = True
 
 
 @router.post("/reveal_culprit")
 async def reveal_culprit(p: RevealPayload):
-    """
-    Révèle au joueur désigné qu'il est le coupable et assigne les missions secrètes
-    à tous les joueurs (tirées de story_seed.json sans doublon).
-    """
     canon = NARRATIVE.canon
     culprit_pid = canon.get("culprit_player_id")
     if not culprit_pid:
@@ -30,23 +27,19 @@ async def reveal_culprit(p: RevealPayload):
     if culprit_pid not in GAME_STATE.players:
         raise HTTPException(status_code=400, detail="Culprit player not present in players list")
 
-    # Marque le joueur comme coupable (interne seulement)
+    # Mark culprit internally
     GAME_STATE.players[culprit_pid]["is_culprit"] = True
 
-    # Assigne les missions secrètes (coupable + autres, depuis story_seed.json)
-    try:
-        assigned = MISSION_SVC.assign_missions()
-    except RuntimeError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    # Assign missions via seed pools (unique per player)
+    assigned = MISSION_SVC.assign_missions()
 
-    # Log event
+    # Push missions to players via WS (best-effort)
+    for pid, mission in assigned.items():
+        await WS.send_to_player(pid, {"type": "secret_mission", "mission": mission})
+
     GAME_STATE.log_event("culprit_revealed", {"culprit_player_id": culprit_pid})
     if p.notify_players:
+        await WS.broadcast({"type": "event", "kind": "missions_ready", "payload": {"count": len(assigned)}})
         GAME_STATE.log_event("missions_ready", {"count": len(assigned)})
 
-    # ⚠️ On ne renvoie pas l'identité du coupable
-    return {
-        "ok": True,
-        "missions_assigned_count": len(assigned),
-        "message": "Missions secrètes assignées, prêtes à être envoyées aux joueurs."
-    }
+    return {"ok": True, "missions_assigned_count": len(assigned)}
