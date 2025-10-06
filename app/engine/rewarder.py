@@ -59,7 +59,7 @@ async def resolve_and_reward(session_id: str) -> Dict[str, Any]:
                 GAME_STATE.log_event("clue_awarded", {"to": recipients, "kind": kind, "session_id": session_id})
 
                 # Broadcast temps réel (les clients filtrent côté front par leur player_id)
-                await manager.broadcast({
+                await WS.broadcast({
                     "type": "clue_awarded",
                     "payload": {"to": recipients, "kind": kind, "text": text}
                 })

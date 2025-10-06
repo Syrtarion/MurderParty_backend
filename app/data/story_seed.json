@@ -7,7 +7,7 @@
   "culprit_missions": [
     {
       "id": "mislead_investigation",
-      "text": "Tu es le meurtrier. Ton objectif est de détourner l'attention en lançant des soupçons sur un autre joueur.",
+      "text": "Ton objectif est de détourner l'attention en lançant des soupçons sur un autre joueur.",
       "points": 50
     }
   ],
@@ -38,22 +38,21 @@
       "text": "Mettre la main sur la clé du bureau et la garder secrètement.",
       "points": 10
     }
+  ],
+  "envelopes": [
+    {
+      "id": 1,
+      "description": "Lettre scellée trouvée dans la bibliothèque",
+      "object_type": "document",
+      "llm_hint": "Contient un nom partiellement effacé",
+      "importance": "high"
+    },
+    {
+      "id": 2,
+      "description": "Clé ancienne rouillée",
+      "object_type": "key",
+      "llm_hint": "Semble ouvrir un coffre ou une porte secrète",
+      "importance": "medium"
+    }
   ]
 }
-
-"envelopes": [
-  {
-    "id": 1,
-    "description": "Lettre scellée trouvée dans la bibliothèque",
-    "object_type": "document",
-    "llm_hint": "Contient un nom partiellement effacé",
-    "importance": "high"
-  },
-  {
-    "id": 2,
-    "description": "Clé ancienne rouillée",
-    "object_type": "key",
-    "llm_hint": "Semble ouvrir un coffre ou une porte secrète",
-    "importance": "medium"
-  }
-]
