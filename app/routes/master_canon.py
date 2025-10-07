@@ -8,6 +8,7 @@ from app.deps.auth import mj_required
 from app.services.llm_engine import run_llm
 from app.services.narrative_core import NARRATIVE
 from app.services.game_state import GAME_STATE
+from app.services.narrative_engine import generate_canon_and_intro  # <-- ajouté
 
 router = APIRouter(
     prefix="/master",
@@ -16,6 +17,7 @@ router = APIRouter(
 )
 
 SEED_PATH = Path("app/data/story_seed.json")
+
 
 class CanonRequest(BaseModel):
     style: str | None = None  # ex: "Gothique, dramatique"
@@ -32,6 +34,7 @@ def load_seed() -> dict:
     return {}
 
 
+# --- VERSION ORIGINALE (inchangée) ---
 @router.post("/generate_canon")
 async def generate_canon(p: CanonRequest):
     """
@@ -61,21 +64,18 @@ async def generate_canon(p: CanonRequest):
     """
 
     try:
-        # ---- Génération par LLM ----
         result = run_llm(prompt)
         text = result.get("text", "").strip()
 
         try:
             canon = json.loads(text)
         except json.JSONDecodeError:
-            # fallback naïf : extraire le JSON entre {}
             start, end = text.find("{"), text.rfind("}")
             if start >= 0 and end > start:
                 canon = json.loads(text[start:end+1])
             else:
                 raise
 
-        # ---- Tirage du coupable parmi les joueurs ----
         if not GAME_STATE.players:
             raise HTTPException(status_code=400, detail="Aucun joueur inscrit, impossible de désigner un coupable.")
 
@@ -86,7 +86,6 @@ async def generate_canon(p: CanonRequest):
         canon["culprit_name"] = culprit_name
         canon["locked"] = True
 
-        # ---- Sauvegarde ----
         NARRATIVE.canon = canon
         NARRATIVE.save()
 
@@ -101,3 +100,27 @@ async def generate_canon(p: CanonRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur LLM ou logique canon: {e}")
+
+
+# --- NOUVELLE ROUTE NON DESTRUCTIVE ---
+@router.post("/generate_canon_with_intro")
+async def generate_canon_with_intro(use_llm: bool = True):
+    """
+    Variante : génère un canon complet + texte d’introduction via narrative_engine.
+    ⚠️ Ne désigne pas le coupable joueur, reste côté “histoire”.
+    """
+    try:
+        data = generate_canon_and_intro(use_llm=use_llm)
+        return {
+            "ok": True,
+            "spoiler_safe_intro": data.get("intro_narrative", ""),
+            "canon_locked": True,
+            "internal_reference": {
+                "culprit": data.get("culprit"),
+                "weapon": data.get("weapon"),
+                "location": data.get("location"),
+                "motive": data.get("motive")
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

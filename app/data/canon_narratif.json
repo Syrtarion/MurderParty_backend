@@ -1,1 +1,8 @@
-{"weapon":"poignard","location":"bibliothèque","motive":"vengeance","culprit_player_id":"53514c21-aa65-46e0-b9f2-d29010098e46","culprit_name":"L'héritier ambitieux","locked":true}
+{
+  "culprit": "La Confidente Mystérieuse",
+  "weapon": "Chandelier",
+  "location": "Bibliothèque",
+  "motive": "Vengeance",
+  "timestamp": null,
+  "intro_narrative": "Dans les Années 1930, au beau milieu de la tempête faisant rage sur une colline isolée, un Manoir se dresse telles les vestiges d'un passé sombre et troublé. Un soir pluvieux, le cri strident d'une jeune femme éveille l'effroi de cette demeure taciturne. Un crime vient d'être commis à la bibliothèque, et c'est une scène macabre qui s'offre à nous. La victime gît là, abattue par ce chandelier qui semble si innocent dans le clair-obscur de l'aube. Le mobile du meurtre ? Une vengeance implacable. Quant au principal suspect, il se dissimule sans doute dans l'ombre des secrets et des non-dits."
+}

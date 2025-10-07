@@ -1,8 +1,25 @@
 {
-  "session_id": "nouvel_an_2025",
-  "games_sequence": [
-    { "id": "quizz_rapide", "round": 1 },
-    { "id": "enigme_flash", "round": 2 },
-    { "id": "quizz_rapide", "round": 3 }
+  "rounds": [
+    {
+      "id": 1,
+      "theme": "La clé du manoir",
+      "mini_game": "enigme_clef",
+      "type": "enigme_llm",
+      "narration": {
+        "intro": "Une clé ancienne attire tous les regards...",
+        "outro": "Le cliquetis s'éteint, mais les doutes persistent."
+      },
+      "max_seconds": 300
+    },
+    {
+      "id": 2,
+      "theme": "Les ombres du jardin",
+      "mini_game": "duel_alibi",
+      "type": "jeu_physique",
+      "narration": {
+        "intro": "Les lanternes s'allument dans le jardin...",
+        "outro": "Le vent disperse les murmures et les certitudes."
+      }
+    }
   ]
 }

@@ -9,15 +9,18 @@ from app.routes.websocket import router as ws_router
 from app.routes.minigames import router as minigames_router
 from app.routes.health import router as health_router
 from app.routes.admin import router as admin_router
+from app.routes.public import router as public_router
 from app.routes.trial import router as trial_router
 from app.routes.game_leaderboard import router as leaderboard_router
 from app.routes.master_objectives import router as master_objectives_router
 from app.routes.master_canon import router as master_canon_router
 from app.routes.master_reveal import router as master_reveal_router
+from app.routes.master_intro import router as master_intro_router
 from app.routes.admin_reset import router as admin_reset_router
 # Si tu utilises le plan de partie :
 from app.routes.party import router as party_router
 from app.routes.party_mj import router as party_mj_router
+from app.routes.session import router as session_router
 
 from app.config.settings import settings
 
@@ -39,14 +42,17 @@ app.include_router(ws_router)
 app.include_router(minigames_router)
 app.include_router(health_router)
 app.include_router(admin_router)
+app.include_router(public_router)
 app.include_router(trial_router)
 app.include_router(leaderboard_router)
 app.include_router(master_objectives_router)
 app.include_router(master_canon_router)
 app.include_router(master_reveal_router)
+app.include_router(master_intro_router)
 app.include_router(admin_reset_router)
 app.include_router(party_router)  # commente cette ligne si tu n'utilises pas party.py
 app.include_router(party_mj_router)
+app.include_router(session_router)
 
 @app.get("/")
 async def root():
