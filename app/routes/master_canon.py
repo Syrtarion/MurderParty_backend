@@ -8,7 +8,8 @@ from app.deps.auth import mj_required
 from app.services.llm_engine import run_llm
 from app.services.narrative_core import NARRATIVE
 from app.services.game_state import GAME_STATE
-from app.services.narrative_engine import generate_canon_and_intro  # <-- ajouté
+from app.services.narrative_engine import generate_canon_and_intro  # pour ton endpoint combiné
+from app.services.ws_manager import ws_broadcast_safe
 
 router = APIRouter(
     prefix="/master",
@@ -17,7 +18,12 @@ router = APIRouter(
 )
 
 SEED_PATH = Path("app/data/story_seed.json")
+CANON_PATH = Path("app/data/canon_narratif.json")
 
+
+# ====================================================
+# 🔹 1. GÉNÉRATION DU CANON NARRATIF SEUL
+# ====================================================
 
 class CanonRequest(BaseModel):
     style: str | None = None  # ex: "Gothique, dramatique"
@@ -34,7 +40,6 @@ def load_seed() -> dict:
     return {}
 
 
-# --- VERSION ORIGINALE (inchangée) ---
 @router.post("/generate_canon")
 async def generate_canon(p: CanonRequest):
     """
@@ -76,6 +81,7 @@ async def generate_canon(p: CanonRequest):
             else:
                 raise
 
+        # Tirage du coupable parmi les joueurs
         if not GAME_STATE.players:
             raise HTTPException(status_code=400, detail="Aucun joueur inscrit, impossible de désigner un coupable.")
 
@@ -86,6 +92,7 @@ async def generate_canon(p: CanonRequest):
         canon["culprit_name"] = culprit_name
         canon["locked"] = True
 
+        # Sauvegarde
         NARRATIVE.canon = canon
         NARRATIVE.save()
 
@@ -102,25 +109,91 @@ async def generate_canon(p: CanonRequest):
         raise HTTPException(status_code=500, detail=f"Erreur LLM ou logique canon: {e}")
 
 
-# --- NOUVELLE ROUTE NON DESTRUCTIVE ---
+# ====================================================
+# 🔹 2. GÉNÉRATION DU CANON + INTRO (ta version combinée)
+# ====================================================
+
 @router.post("/generate_canon_with_intro")
-async def generate_canon_with_intro(use_llm: bool = True):
+async def generate_canon_with_intro():
     """
-    Variante : génère un canon complet + texte d’introduction via narrative_engine.
-    ⚠️ Ne désigne pas le coupable joueur, reste côté “histoire”.
+    Génère un canon narratif complet + l'introduction immersive.
     """
     try:
-        data = generate_canon_and_intro(use_llm=use_llm)
+        result = generate_canon_and_intro()
+        return {"ok": True, **result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur génération canon + intro: {e}")
+
+
+# ====================================================
+# 🔹 3. GÉNÉRATION UNIQUEMENT DE L’INTRO
+# ====================================================
+
+@router.post("/intro")
+async def generate_intro():
+    """
+    Génère et diffuse la narration d’introduction à partir du canon verrouillé.
+    """
+    try:
+        if not CANON_PATH.exists():
+            raise HTTPException(status_code=404, detail="Canon narratif introuvable")
+
+        with open(CANON_PATH, "r", encoding="utf-8") as f:
+            canon = json.load(f)
+
+        weapon = canon.get("weapon", "une arme mystérieuse")
+        location = canon.get("location", "un lieu inconnu")
+        motive = canon.get("motive", "un mobile flou")
+        tone = canon.get("tone", "dramatique, immersif")
+        victim = canon.get("victim", "la victime")
+        culprit = canon.get("culprit_name", "l’un des invités")
+
+        prompt = f"""
+        Tu es le narrateur d'une Murder Party.
+
+        Contexte :
+        - Lieu du crime : {location}
+        - Arme : {weapon}
+        - Mobile : {motive}
+        - Victime : {victim}
+        - Ton : {tone}
+
+        Tâche :
+        Rédige une courte introduction immersive (4-6 phrases maximum) pour ouvrir la soirée.
+        Elle doit évoquer l’ambiance, le drame, et installer le mystère, sans révéler le coupable.
+
+        Réponds avec un texte brut, sans balise, sans JSON.
+        """
+
+        res = run_llm(prompt)
+        intro_text = (res.get("text") or "").strip()
+
+        entry = {
+            "event": "intro",
+            "text": intro_text,
+            "scope": "broadcast",
+        }
+        canon.setdefault("timeline", []).append(entry)
+
+        with open(CANON_PATH, "w", encoding="utf-8") as f:
+            json.dump(canon, f, ensure_ascii=False, indent=2)
+
+        # Diffusion WS
+        ws_broadcast_safe({
+            "type": "narration",
+            "scope": "broadcast",
+            "payload": {
+                "event": "intro",
+                "text": intro_text
+            }
+        })
+
         return {
             "ok": True,
-            "spoiler_safe_intro": data.get("intro_narrative", ""),
-            "canon_locked": True,
-            "internal_reference": {
-                "culprit": data.get("culprit"),
-                "weapon": data.get("weapon"),
-                "location": data.get("location"),
-                "motive": data.get("motive")
-            }
+            "intro_text": intro_text,
+            "public_path": "/public/intro",
+            "canon_file": "canon_narratif.json"
         }
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
