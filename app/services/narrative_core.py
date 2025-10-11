@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from threading import RLock  # <<< ici
+from threading import RLock
 from typing import Any, Dict, List
 import re
 
@@ -17,23 +17,34 @@ DEFAULT_CANON = {
     "location": None,
     "motive": None,
     "clues": {"crucial": [], "red_herrings": [], "ambiguous": [], "decor": []},
+    "timeline": [],  # ✅ Ajout par défaut
 }
+
 
 @dataclass
 class NarrativeCore:
-    _lock: RLock = field(default_factory=RLock, init=False, repr=False)  # <<< ici
+    _lock: RLock = field(default_factory=RLock, init=False, repr=False)
     canon: Dict[str, Any] = field(default_factory=lambda: DEFAULT_CANON.copy())
 
     def load(self) -> None:
+        """Charge le fichier canon_narratif.json et garantit la cohérence de sa structure."""
         with self._lock:
             data = read_json(CANON_PATH)
-            self.canon = data or DEFAULT_CANON.copy()
+            if not data:
+                data = DEFAULT_CANON.copy()
+            # ✅ Assure la présence des clés critiques
+            for key in ("clues", "timeline"):
+                if key not in data:
+                    data[key] = [] if key == "timeline" else {}
+            self.canon = data
 
     def save(self) -> None:
+        """Sauvegarde sécurisée du canon narratif."""
         with self._lock:
             write_json(CANON_PATH, self.canon)
 
     def choose_culprit(self, culprit: str, weapon: str, location: str, motive: str) -> Dict[str, Any]:
+        """Verrouille le canon narratif (coupable, arme, lieu, mobile)."""
         with self._lock:
             if self.canon.get("locked"):
                 return self.canon
@@ -44,16 +55,33 @@ class NarrativeCore:
                 "motive": motive,
                 "locked": True,
             })
-            self.save()  # ok car RLock
+            self.save()
             return self.canon
 
     def append_clue(self, kind: str, clue: Dict[str, Any]) -> None:
+        """Ajoute un indice dans la catégorie correspondante."""
         with self._lock:
             bucket = self.canon.setdefault("clues", {}).setdefault(kind, [])
             bucket.append(clue)
-            self.save()  # ok car RLock
+            self.save()
+
+    def append_event(self, event: Dict[str, Any]) -> None:
+        """✅ Ajoute un événement à la timeline en garantissant sa création."""
+        with self._lock:
+            if "timeline" not in self.canon:
+                self.canon["timeline"] = []
+            self.canon["timeline"].append(event)
+            self.save()
+
+    @property
+    def timeline(self) -> List[Dict[str, Any]]:
+        """✅ Retourne toujours une timeline valide, même si absente dans le fichier JSON."""
+        if "timeline" not in self.canon:
+            self.canon["timeline"] = []
+        return self.canon["timeline"]
 
 
+# === Instance globale ===
 NARRATIVE = NarrativeCore()
 NARRATIVE.load()
 
@@ -98,6 +126,6 @@ def get_sensitive_terms() -> List[str]:
 
 
 CONFESSION_PATTERNS: List[re.Pattern] = [
-    re.compile(r"\\b(je suis|c'?est|j'avoue|confesse)\\b.*\\b(coupable|meurtrier|meurtrière)\\b", re.IGNORECASE),
-    re.compile(r"\\b([A-ZÉÈÀÂÎÔÛ][a-zéèàâêîôû\\-]+)\\b.*\\b(a tué|a assassiné|est le coupable)\\b", re.IGNORECASE),
+    re.compile(r"\b(je suis|c'?est|j'avoue|confesse)\b.*\b(coupable|meurtrier|meurtrière)\b", re.IGNORECASE),
+    re.compile(r"\b([A-ZÉÈÀÂÎÔÛ][a-zéèàâêîôû\-]+)\b.*\b(a tué|a assassiné|est le coupable)\b", re.IGNORECASE),
 ]

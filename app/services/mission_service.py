@@ -2,7 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 import json
 import random
 
@@ -30,6 +30,7 @@ def load_seed() -> dict:
 
 @dataclass
 class MissionService:
+    """Assigne des missions secrètes à tous les joueurs en fonction du rôle."""
     _lock: RLock = field(default_factory=RLock, init=False, repr=False)
 
     def assign_missions(self) -> Dict[str, Dict[str, Any]]:
@@ -41,17 +42,21 @@ class MissionService:
         with self._lock:
             players = GAME_STATE.players
             if not players:
-                raise RuntimeError("No players to assign missions to")
+                raise RuntimeError("Aucun joueur disponible pour l'attribution des missions.")
 
+            # Récupère le canon narratif
             from app.services.narrative_core import NARRATIVE
-            canon = NARRATIVE.canon
+            canon = NARRATIVE.canon or {}
             culprit_pid = canon.get("culprit_player_id")
 
             seed = load_seed()
-            pool_culprit = seed.get("culprit_missions", [])
-            pool_others = seed.get("missions", [])
+            pool_culprit = list(seed.get("culprit_missions", []))
+            pool_others = list(seed.get("missions", []))
 
-            # Shuffle missions to avoid predictability
+            if not pool_others:
+                raise RuntimeError("Le fichier story_seed.json ne contient pas de missions secondaires valides.")
+
+            # Mélange les missions pour éviter toute prédictibilité
             random.shuffle(pool_others)
 
             assigned: Dict[str, Dict[str, Any]] = {}
@@ -59,53 +64,59 @@ class MissionService:
             for pid, p in players.items():
                 player_name = p.get("character") or p.get("display_name") or pid
 
+                # Coupable
                 if pid == culprit_pid:
-                    # Mission du coupable : pioche dans pool_culprit si dispo, sinon via LLM
                     if pool_culprit:
                         mission = random.choice(pool_culprit)
                         pool_culprit.remove(mission)
                         mission.setdefault("type", "primary")
                         mission.setdefault("points", DEFAULT_CULPRIT_POINTS)
                     else:
-                        # fallback LLM
+                        # Fallback via LLM si pas de mission prévue
                         context = (
-                            f"Cadre: {seed.get('setting','')}. "
-                            f"Contexte: {seed.get('context','')}. "
-                            f"Victime: {seed.get('victim','')}."
+                            f"Cadre: {seed.get('setting', '')}. "
+                            f"Contexte: {seed.get('context', '')}. "
+                            f"Victime: {seed.get('victim', '')}."
                         )
                         prompt = f"""
-Tu écris une mission secrète en français pour le joueur coupable d'une murder party.
-Mission courte (1-2 phrases), immersive, directive.
-Ne révèle pas le crime ni les réponses du canon.
+Tu écris une mission secrète en français pour le joueur COUPABLE d'une murder party.
+Elle doit être immersive, directive et tenir en 1-2 phrases.
+Ne révèle jamais explicitement le crime ni le canon.
 Contexte: {context}
 Personnage: {player_name}
-Retour: JSON avec {{ "type":"primary","text":"...","points":{DEFAULT_CULPRIT_POINTS} }}
+Réponds uniquement en JSON: {{
+  "type":"primary",
+  "text":"<mission>",
+  "points":{DEFAULT_CULPRIT_POINTS}
+}}
 """
-                        r = run_llm(prompt)
                         try:
+                            r = run_llm(prompt)
                             mission = json.loads(r.get("text", "{}"))
                         except Exception:
                             mission = {
                                 "type": "primary",
-                                "text": "Ton objectif est de brouiller les pistes et semer le doute.",
+                                "text": "Brouille les pistes et détourne les soupçons de toi, quel qu’en soit le prix.",
                                 "points": DEFAULT_CULPRIT_POINTS,
                             }
+                # Autres joueurs
                 else:
                     if not pool_others:
-                        raise RuntimeError("Pas assez de missions annexes pour tous les joueurs non coupables")
+                        raise RuntimeError("Pas assez de missions secondaires pour tous les joueurs.")
                     mission = pool_others.pop()
                     mission.setdefault("type", "secondary")
                     mission.setdefault("points", DEFAULT_OTHER_POINTS)
 
-                # Sauvegarde dans le joueur
+                # Enregistre la mission dans le joueur
                 p["secret_mission"] = mission
                 assigned[pid] = mission
 
-            # Save and log
+            # Persistance et log
             GAME_STATE.save()
             GAME_STATE.log_event("missions_assigned", {"count": len(assigned)})
 
             return assigned
 
 
+# Instance globale
 MISSION_SVC = MissionService()

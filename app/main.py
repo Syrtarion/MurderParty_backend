@@ -21,6 +21,9 @@ from app.routes.admin_reset import router as admin_reset_router
 from app.routes.party import router as party_router
 from app.routes.party_mj import router as party_mj_router
 from app.routes.session import router as session_router
+from app.routes.timeline import router as timeline_router
+from app.routes.master_epilogue import router as master_epilogue_router
+
 
 from app.config.settings import settings
 
@@ -53,6 +56,9 @@ app.include_router(admin_reset_router)
 app.include_router(party_router)  # commente cette ligne si tu n'utilises pas party.py
 app.include_router(party_mj_router)
 app.include_router(session_router)
+app.include_router(timeline_router)
+app.include_router(master_epilogue_router)
+
 
 @app.get("/")
 async def root():

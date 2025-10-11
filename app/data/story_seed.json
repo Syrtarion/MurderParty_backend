@@ -86,57 +86,19 @@
     }
   ],
 
-  "missions": {
-    "common_pool": [
-      {
-        "id": "collect_letter",
-        "text": "Trouver une lettre compromettante dans la bibliothèque.",
-        "points": 10
-      },
-      {
-        "id": "defend_alibi",
-        "text": "Défendre publiquement un autre joueur quand il sera accusé.",
-        "points": 10
-      },
-      {
-        "id": "hide_item",
-        "text": "Faire disparaître un objet important de la scène de crime.",
-        "points": 10
-      },
-      {
-        "id": "spread_rumor",
-        "text": "Lancer une rumeur sur un autre invité pour détourner l'attention.",
-        "points": 10
-      },
-      {
-        "id": "steal_key",
-        "text": "Mettre la main sur la clé du bureau et la garder secrètement.",
-        "points": 10
-      },
-      {
-        "id": "gain_trust",
-        "text": "Convaincre deux joueurs de partager leurs indices avec toi.",
-        "points": 15
-      },
-      {
-        "id": "false_confession",
-        "text": "Faire un faux aveu pendant la partie pour brouiller les pistes.",
-        "points": 20
-      }
-    ],
-    "culprit_only": [
-      {
-        "id": "mislead_investigation",
-        "text": "Détourne l’attention en lançant des soupçons crédibles sur un autre joueur.",
-        "points": 50
-      },
-      {
-        "id": "destroy_evidence",
-        "text": "Empêche qu’un indice important ne soit révélé.",
-        "points": 40
-      }
-    ]
-  },
+  "missions": [
+  { "id": "collect_letter",   "text": "Trouver une lettre compromettante dans la bibliothèque.", "points": 10 },
+  { "id": "defend_alibi",     "text": "Défendre publiquement un autre joueur quand il sera accusé.", "points": 10 },
+  { "id": "hide_item",        "text": "Faire disparaître un objet important de la scène de crime.", "points": 10 },
+  { "id": "spread_rumor",     "text": "Lancer une rumeur sur un autre invité pour détourner l'attention.", "points": 10 },
+  { "id": "steal_key",        "text": "Mettre la main sur la clé du bureau et la garder secrètement.", "points": 10 },
+  { "id": "gain_trust",       "text": "Convaincre deux joueurs de partager leurs indices avec toi.", "points": 15 },
+  { "id": "false_confession", "text": "Faire un faux aveu pendant la partie pour brouiller les pistes.", "points": 20 }
+],
+"culprit_missions": [
+  { "id": "mislead_investigation", "text": "Détourne l’attention en lançant des soupçons crédibles sur un autre joueur.", "points": 50 },
+  { "id": "destroy_evidence",      "text": "Empêche qu’un indice important ne soit révélé.", "points": 40 }
+],
 
   "envelopes": [
     {

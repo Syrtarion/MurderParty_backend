@@ -1,8 +1,11 @@
+# app/services/game_state.py
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
 from typing import Dict, Any, Optional
 from uuid import uuid4
+import time
+import json
 
 from app.config.settings import settings
 from .io_utils import read_json, write_json
@@ -25,8 +28,10 @@ class GameState:
     })
     events: list[Dict[str, Any]] = field(default_factory=list)
 
+    # -----------------------------
+    # Gestion fichiers de session
+    # -----------------------------
     def load(self) -> None:
-        """Recharge l’état du jeu depuis les fichiers JSON."""
         with self._lock:
             self.players = read_json(PLAYERS_PATH) or {}
             self.state = read_json(STATE_PATH) or {
@@ -38,46 +43,110 @@ class GameState:
             self.events = read_json(EVENTS_PATH) or []
 
     def save(self) -> None:
-        """Sauvegarde l’état complet (joueurs, état, événements)."""
         with self._lock:
             write_json(PLAYERS_PATH, self.players)
             write_json(STATE_PATH, self.state)
             write_json(EVENTS_PATH, self.events)
 
+    # -----------------------------
+    # Gestion des joueurs
+    # -----------------------------
     def add_player(self, display_name: Optional[str] = None) -> str:
-        """Crée un joueur et le sauvegarde immédiatement."""
+        """Ajoute un joueur et log immédiatement l'événement."""
         with self._lock:
             pid = str(uuid4())
-            self.players[pid] = {
+            pdata = {
                 "player_id": pid,
                 "display_name": display_name or f"Player-{pid[:5]}",
                 "joined": True,
                 "inventory": [],
                 "found_clues": [],
             }
+            self.players[pid] = pdata
+            self._log_event_nolock("player_join", {"player_id": pid, "display_name": pdata["display_name"]})
             self.save()
             return pid
 
-    def log_event(self, kind: str, payload: Dict[str, Any]) -> None:
-        """Ajoute un événement dans le log global."""
+    # -----------------------------
+    # Gestion des événements
+    # -----------------------------
+    def _log_event_nolock(self, kind: str, payload: Dict[str, Any], scope: str = "system") -> None:
+        """Enregistre un événement interne (sans verrou)."""
+        if not isinstance(self.events, list):
+            self.events = []
+        self.events.append({
+            "kind": kind,
+            "scope": scope,
+            "payload": payload,
+            "ts": time.time()
+        })
+
+    def log_event(self, kind: str, payload: Dict[str, Any], scope: str = "system") -> None:
+        """Enregistre un événement avec verrou (sécurisé)."""
         with self._lock:
-            self.events.append({"kind": kind, "payload": payload})
+            self._log_event_nolock(kind, payload, scope)
             self.save()
 
 
+# -----------------------------
+# Outils externes
+# -----------------------------
 def save_json(path: Path, data: dict) -> None:
-    """
-    Sauvegarde générique d’un dictionnaire dans un fichier JSON.
-    Utilisée par d’autres services comme narrative_engine.
-    """
+    """Sauvegarde JSON robuste."""
     try:
         with open(path, "w", encoding="utf-8") as f:
-            import json
             json.dump(data, f, indent=2, ensure_ascii=False)
     except Exception as e:
         raise RuntimeError(f"Erreur lors de la sauvegarde JSON : {e}")
 
 
-# Instance unique du GameState
-GAME_STATE = GameState()
-GAME_STATE.load()
+# -----------------------------
+# Singleton global
+# -----------------------------
+_instance = None
+
+def get_game_state() -> GameState:
+    """Garantit un seul GameState partagé dans tout le backend."""
+    global _instance
+    if _instance is None:
+        _instance = GameState()
+        _instance.load()
+    return _instance
+
+
+GAME_STATE = get_game_state()
+
+
+# -----------------------------
+# Helper d’enregistrement global
+# -----------------------------
+def register_event(kind: str, details: dict | None = None, scope: str = "system") -> dict:
+    """
+    Helper pour enregistrer un événement globalement dans app/data/events.json.
+    Utilisé par les endpoints (intro, canon, narration, épilogue...).
+    """
+    event = {
+        "kind": kind,
+        "scope": scope,
+        "payload": details or {},
+        "ts": time.time()
+    }
+
+    # Chargement et écriture directe du fichier JSON
+    try:
+        if EVENTS_PATH.exists():
+            existing = json.loads(EVENTS_PATH.read_text(encoding="utf-8"))
+        else:
+            existing = []
+    except Exception:
+        existing = []
+
+    existing.append(event)
+    EVENTS_PATH.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # Log console pour debug
+    print(f"[EVENT REGISTERED] {kind} (scope={scope}) → {details or {}}")
+
+    # Ajout en mémoire
+    GAME_STATE.log_event(kind, details or {}, scope)
+    return event

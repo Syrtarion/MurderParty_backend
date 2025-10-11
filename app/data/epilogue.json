@@ -1,0 +1,7 @@
+{
+  "public_epilogue": "La soirée d'enquête s'achève enfin, et la vérité éclate. Le coupable est Player-09bfe, qui a tué avec un pistolet dans la bibliothèque, poussé par son rancoeur lié au scandale financier. Bien que vous ayez travaillé ensemble pour résoudre cette affaire, certains ont brillamment réussi à identifier les indices clés, tandis que d'autres ont commis des erreurs coûteuses. L'histoire se termine par une note tragique, et nous ne pouvons qu'espérer que justice soit rendue.",
+  "private_epilogues": {
+    "player_id_1": "<texte personnalisé>",
+    "player_id_2": "<texte personnalisé>"
+  }
+}

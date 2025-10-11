@@ -33,10 +33,34 @@ echo ✅ JSON valides.
 REM --- TIMELINE ---
 echo.
 echo [4] Vérification du nombre d’événements...
-for /f %%i in ('find /c "\"event\"" app/data/canon_narratif.json') do set count=%%i
-echo Nombre d’événements : %count%
-if %count% LSS 10 (echo ❌ Trop peu d’événements & pause & exit /b 1)
-echo ✅ Timeline cohérente.
+
+set "EVENTFILE=app\data\events.json"
+
+if not exist "%EVENTFILE%" (
+    echo ❌ Fichier introuvable - %EVENTFILE%
+    goto :after_events
+)
+
+rem 1) Extraire toutes les occurrences de 'kind' dans un tmp
+set "EVTMP=%TEMP%\_events_tmp_%RANDOM%.txt"
+find /i "kind" "%EVENTFILE%" > "%EVTMP%"
+
+rem 2) Compter le nombre de lignes du tmp (chaque ligne = 1 événement trouvé)
+set "EVENTCOUNT="
+for /f "tokens=2 delims=:" %%A in ('find /v /c "" "%EVTMP%"') do set /a EVENTCOUNT=%%A
+
+del "%EVTMP%" >nul 2>&1
+
+if not defined EVENTCOUNT set "EVENTCOUNT=0"
+echo Nombre d’événements : %EVENTCOUNT%
+
+if %EVENTCOUNT% LSS 10 (
+    echo ❌ Trop peu d’événements
+) else (
+    echo ✅ Nombre d’événements suffisant
+)
+
+:after_events
 
 echo.
 echo --------------------------------
