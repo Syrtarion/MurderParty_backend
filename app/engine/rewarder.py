@@ -5,7 +5,13 @@ from app.services.minigame_runtime import RUNTIME
 from app.services.game_state import GAME_STATE
 from app.services.narrative_core import NARRATIVE
 from app.services.llm_engine import generate_indice
-from app.services.ws_manager import WS, ws_send_to_player, ws_broadcast
+from app.services.ws_manager import (
+    WS,
+    ws_send_to_player_safe,   # au lieu de ws_send_to_player
+    ws_broadcast_safe,        # au lieu de ws_broadcast
+    ws_send_type_to_player_safe,
+    ws_broadcast_type_safe,
+)
 
 
 

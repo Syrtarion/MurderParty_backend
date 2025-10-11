@@ -23,15 +23,23 @@ from app.routes.party_mj import router as party_mj_router
 from app.routes.session import router as session_router
 from app.routes.timeline import router as timeline_router
 from app.routes.master_epilogue import router as master_epilogue_router
+from app.routes import websocket as ws_routes  # <-- importe ton fichier websocket.py
+from app.routes import debug_ws
 
 
 from app.config.settings import settings
 
 app = FastAPI(title="Murderparty Backend")
 
+# CORS REST (resserré sur le front)
+ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    # "http://192.168.1.xx:3000"  # si front sur autre machine du LAN
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -58,6 +66,8 @@ app.include_router(party_mj_router)
 app.include_router(session_router)
 app.include_router(timeline_router)
 app.include_router(master_epilogue_router)
+app.include_router(ws_routes.router)
+app.include_router(debug_ws.router) 
 
 
 @app.get("/")
