@@ -1,3 +1,19 @@
+"""
+Module routes/master_canon.py
+Rôle:
+- Génère automatiquement un "canon narratif" (arme/lieu/mobile) via LLM
+  et verrouille un coupable parmi les joueurs inscrits.
+
+Intégrations:
+- run_llm: exécution brute du prompt (retour texte).
+- NARRATIVE: stockage du canon + sauvegarde persistante.
+- GAME_STATE: sélection d’un joueur au hasard comme coupable + logs d’events.
+- register_event: écrit dans la timeline publique.
+
+Robustesse JSON:
+- Extraction tolerant aux débordements de texte (cherche { ... }).
+- 400 si aucun joueur inscrit (impossible de désigner un coupable).
+"""
 # app/routes/master_canon.py
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -24,6 +40,10 @@ class CanonRequest(BaseModel):
 
 
 def load_seed() -> dict:
+    """
+    Charge le `story_seed.json` si présent.
+    Permet d’injecter un cadre (setting/context/victim/tone) dans le prompt LLM.
+    """
     if SEED_PATH.exists():
         try:
             with open(SEED_PATH, "r", encoding="utf-8") as f:
@@ -39,6 +59,7 @@ async def generate_canon(p: CanonRequest):
     Génère automatiquement un canon narratif :
     - Arme, lieu et mobile par LLM
     - Coupable tiré au hasard parmi les joueurs
+    - Verrouille `locked=True` et persiste dans `NARRATIVE`.
     """
     seed = load_seed()
 
@@ -63,21 +84,25 @@ async def generate_canon(p: CanonRequest):
         result = run_llm(prompt)
         text = result.get("text", "").strip()
 
+        # --- Parsing JSON robuste ---
         try:
             canon = json.loads(text)
         except json.JSONDecodeError:
+            # On tente d’isoler le premier bloc JSON valide
             start, end = text.find("{"), text.rfind("}")
             if start >= 0 and end > start:
                 canon = json.loads(text[start:end+1])
             else:
                 raise
 
+        # --- Sélection d'un coupable parmi les joueurs ---
         if not GAME_STATE.players:
             raise HTTPException(status_code=400, detail="Aucun joueur inscrit, impossible de désigner un coupable.")
 
         culprit_id, culprit_data = random.choice(list(GAME_STATE.players.items()))
         culprit_name = culprit_data.get("character") or culprit_data.get("display_name") or culprit_id
 
+        # Enrichissement + verrou
         canon["culprit_player_id"] = culprit_id
         canon["culprit_name"] = culprit_name
         canon["locked"] = True
@@ -86,7 +111,7 @@ async def generate_canon(p: CanonRequest):
         NARRATIVE.canon = canon
         NARRATIVE.save()
 
-        # Logs
+        # Logs/timeline
         register_event("canon_generated", {
             "weapon": canon.get("weapon"),
             "location": canon.get("location"),
@@ -102,4 +127,5 @@ async def generate_canon(p: CanonRequest):
         return {"ok": True, "canon": canon}
 
     except Exception as e:
+        # Remonte une 500 explicite pour le front MJ
         raise HTTPException(status_code=500, detail=f"Erreur LLM ou logique canon: {e}")

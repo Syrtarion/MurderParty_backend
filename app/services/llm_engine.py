@@ -1,3 +1,18 @@
+"""
+Service: llm_engine.py
+Rôle:
+- Centraliser les appels LLM (Ollama par défaut) pour la génération
+  d'indices et de textes (JSON ou phrases courtes).
+- Appliquer une post-édition et un anti-spoiler basés sur le canon.
+
+Fonctions:
+- generate_indice(prompt, kind): chat LLM (Ollama /api/chat) → 1–2 phrases FR.
+- run_llm(prompt): génération brute (Ollama /api/generate) → flux concaténé.
+
+Sécurité narrative:
+- `get_canon_summary()` + `get_sensitive_terms()` injectés en system.
+- `_has_spoiler()` détecte les confessions ou mentions du canon (regex + banlist).
+"""
 import requests, re
 import json
 from typing import Dict, Any, List
@@ -16,6 +31,7 @@ SYSTEM_PROMPT = (
 
 
 def _truncate_to_two_sentences(text: str) -> str:
+    """Coupe proprement la sortie à 1–2 phrases max (délimiteurs .!?)."""
     parts = re.split(r"([\.!?])", text.strip())
     if len(parts) <= 2:
         return text.strip()
@@ -23,10 +39,12 @@ def _truncate_to_two_sentences(text: str) -> str:
 
 
 def _strip_lead_ins(text: str) -> str:
+    """Supprime des préambules type 'Indice:' 'Voici un indice:' pour un rendu direct."""
     return re.sub(r"^\s*(?:indice\s*:\s*|voici\s+un\s+indice\s*:\s*)", "", text, flags=re.IGNORECASE).strip()
 
 
 def _has_spoiler(text: str, sensitive_terms: List[str]) -> bool:
+    """Détection heuristique: termes du canon + motifs de confession."""
     low = text.lower()
     for t in sensitive_terms:
         if t and t.lower() in low:
@@ -38,6 +56,7 @@ def _has_spoiler(text: str, sensitive_terms: List[str]) -> bool:
 
 
 def _postprocess(text: str) -> str:
+    """Chaîne de post-traitement (nettoyage préfixe + troncature)."""
     txt = _strip_lead_ins(text)
     txt = _truncate_to_two_sentences(txt)
     return txt.strip()
@@ -46,6 +65,8 @@ def _postprocess(text: str) -> str:
 def generate_indice(prompt: str, kind: str = "ambiguous", temperature: float = 0.7, max_attempts: int = 2) -> Dict[str, Any]:
     """
     Génère un indice via Ollama (/api/chat par défaut) en tenant compte du canon et des garde-fous.
+    - `kind` influe la température (crucial/ambiguous/red_herrings/decor).
+    - Plusieurs tentatives si spoiler détecté.
     """
     endpoint = settings.LLM_ENDPOINT.replace("/api/generate", "/api/chat")
 
@@ -74,6 +95,7 @@ def generate_indice(prompt: str, kind: str = "ambiguous", temperature: float = 0
         try:
             messages = list(base_messages) + [{"role": "user", "content": prompt}]
             if attempt > 0 and sensitive_terms:
+                # Renforcement anti-spoiler aux tentatives suivantes
                 banlist = ", ".join(sensitive_terms[:5])
                 messages.append({"role": "system", "content": f"Do NOT mention or allude to: {banlist}. Rephrase to avoid spoilers."})
 
@@ -95,6 +117,7 @@ def generate_indice(prompt: str, kind: str = "ambiguous", temperature: float = 0
             )
             resp.raise_for_status()
             data = resp.json()
+            # Ollama /api/chat peut renvoyer {"message":{"content":...}} ou {"response":...}
             text = (data.get("message") or {}).get("content") or data.get("response") or ""
             text = _postprocess(text)
 
@@ -107,11 +130,14 @@ def generate_indice(prompt: str, kind: str = "ambiguous", temperature: float = 0
             last_err = str(e)
             attempt += 1
 
+    # Fallback minimal en cas d'échecs répétés
     return {"text": f"[stub] {kind} clue based on: {prompt[:120]}...", "kind": kind, "error": last_err or "antispam"}
 
 def run_llm(prompt: str) -> dict:
     """
     Appelle le LLM configuré et retourne un dict { 'text': ... }.
+    - Ollama /api/generate renvoie un flux JSONL → concaténation des 'response'.
+    - Fallback stub si provider inconnu.
     """
     if settings.LLM_PROVIDER == "ollama":
         url = "http://localhost:11434/api/generate"
@@ -120,7 +146,7 @@ def run_llm(prompt: str) -> dict:
         resp.raise_for_status()
         text = resp.text
 
-        # Ollama stream => concat tout
+        # Ollama stream → concaténation de chaque ligne JSON {"response": "..."}
         out = ""
         for line in text.splitlines():
             try:

@@ -1,3 +1,19 @@
+"""
+Application FastAPI — Point d'entrée
+====================================
+
+Rôle
+----
+- Instancie l'app FastAPI, configure le CORS pour le front,
+- Monte tous les routeurs (REST + WebSocket),
+- Affiche la configuration LLM et la liste des routes au démarrage.
+
+Notes
+-----
+- Les importations des routeurs sont explicites pour éviter les surprises d'auto-discovery.
+- `debug_ws` est monté seulement si `ROUTER_ENABLED` est True (pratique en dev).
+- Garder la liste `ALLOWED_ORIGINS` en phase avec les URLs du front.
+"""
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -23,15 +39,16 @@ from app.routes.party_mj import router as party_mj_router
 from app.routes.session import router as session_router
 from app.routes.timeline import router as timeline_router
 from app.routes.master_epilogue import router as master_epilogue_router
-from app.routes import websocket as ws_routes  # <-- importe ton fichier websocket.py
 from app.routes import debug_ws
-
+from app.routes import auth as auth_router
 
 from app.config.settings import settings
 
+# --- App FastAPI principale ---
 app = FastAPI(title="Murderparty Backend")
 
 # CORS REST (resserré sur le front)
+# ⚠️ Mettre ici toutes les origines autorisées (domaines du front en dev/prod).
 ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
@@ -39,17 +56,18 @@ ALLOWED_ORIGINS = [
 ]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=ALLOWED_ORIGINS,   # ← whitelist des frontends autorisés
+    allow_credentials=True,          # ← cookies/headers d'auth si besoin
+    allow_methods=["*"],             # ← autorise toutes les méthodes HTTP
+    allow_headers=["*"],             # ← autorise tous les headers custom
 )
 
 # Montage des routers
+# Chaque router déclare son `prefix` et ses `tags`. L'ordre n'a pas d'effet fonctionnel ici.
 app.include_router(game_router)
 app.include_router(players_router)
 app.include_router(master_router)
-app.include_router(ws_router)
+app.include_router(ws_router)                  # WebSocket endpoint (/ws)
 app.include_router(minigames_router)
 app.include_router(health_router)
 app.include_router(admin_router)
@@ -66,20 +84,33 @@ app.include_router(party_mj_router)
 app.include_router(session_router)
 app.include_router(timeline_router)
 app.include_router(master_epilogue_router)
-app.include_router(ws_routes.router)
-app.include_router(debug_ws.router) 
 
+# Router de debug WS optionnel (en dev)
+if getattr(debug_ws, "ROUTER_ENABLED", False):
+    app.include_router(debug_ws.router)
 
+# Auth joueurs (register/login)
+app.include_router(auth_router.router)
+
+# --- Racine utile pour "ping" simple (sans /health) ---
 @app.get("/")
 async def root():
+    """Ping basique : permet de vérifier que l'app tourne (sans dépendance LLM)."""
     return {"ok": True, "service": "murderparty-backend"}
 
+# --- Hook de démarrage ---
 @app.on_event("startup")
 async def list_routes():
+    """
+    Au démarrage:
+    - affiche la config LLM courante (provider, modèle, endpoint),
+    - liste les routes (path + méthodes) dans la console (diagnostic).
+    """
     print("== LLM config ==", settings.LLM_PROVIDER, settings.LLM_MODEL, settings.LLM_ENDPOINT)
     print("== Registered routes ==")
     for r in app.routes:
         try:
             print(r.path, r.methods)
         except Exception:
+            # Certains objets routes peuvent ne pas exposer ces attributs; on ignore.
             pass

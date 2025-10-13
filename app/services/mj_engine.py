@@ -1,3 +1,22 @@
+"""
+Service: mj_engine.py
+Rôle:
+- Orchestrateur "macro" des phases MJ (ouverture, enveloppes, rôles, session active).
+- Diffuse les changements de phase via WS et consigne dans GAME_STATE.
+
+Phases:
+- WAITING_START → WAITING_PLAYERS → ENVELOPES_DISTRIBUTION → ROLES_ASSIGNED → SESSION_ACTIVE → ACCUSATION_OPEN → ENDED
+
+I/O:
+- story_seed.json (enveloppes à répartir)
+- characters.json (attribution simple si dispo)
+- session_plan.json (lecture d'information pour status)
+
+Notes:
+- Méthodes `players_ready()` et `envelopes_done()` envoient des WS ciblés/collectifs.
+- `_assign_envelopes_equitable()` → distribution round-robin + WS perso.
+- `_assign_characters_if_available()` → pick naïf depuis characters.json.
+"""
 from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,6 +46,7 @@ CHARACTERS_PATH = DATA_DIR / "characters.json"
 
 
 def _load_json(path: Path, default: Any) -> Any:
+    """Lecture JSON tolérante (retourne `default` en cas d'erreur)."""
     try:
         if path.exists():
             return json.loads(path.read_text(encoding="utf-8"))
@@ -47,14 +67,16 @@ class MJEngine:
     """
 
     def phase(self) -> str:
+        """Retourne l'étiquette de phase courante (ou WAITING_START par défaut)."""
         return GAME_STATE.state.get("phase_label", WAITING_START)
 
     def set_phase(self, phase: str) -> None:
+        """Met à jour la phase côté GAME_STATE et persiste immédiatement."""
         GAME_STATE.state["phase_label"] = phase
         GAME_STATE.save()
 
     async def start_party(self) -> Dict[str, Any]:
-        """Initialise la soirée et passe en attente des joueurs."""
+        """Initialise la soirée et passe en attente des joueurs (+ broadcast phase)."""
         self.set_phase(WAITING_PLAYERS)
         GAME_STATE.log_event("phase_change", {"phase": WAITING_PLAYERS})
         await WS.broadcast({
@@ -66,7 +88,7 @@ class MJEngine:
         return {"ok": True, "phase": WAITING_PLAYERS}
 
     async def players_ready(self) -> Dict[str, Any]:
-        """Signal explicite: tous les joueurs sont arrivés. On lance la distribution des enveloppes."""
+        """Signal explicite: tous les joueurs sont arrivés → distribution des enveloppes (équitable)."""
         if not GAME_STATE.players:
             return {"ok": False, "error": "Aucun joueur inscrit."}
 
@@ -84,7 +106,7 @@ class MJEngine:
         return {"ok": True, "phase": ENVELOPES_DISTRIBUTION, "assigned_envelopes": assigned}
 
     async def envelopes_done(self) -> Dict[str, Any]:
-        """Fin de la distribution des enveloppes → attribut les personnages si dispo et passe à ROLES_ASSIGNED."""
+        """Fin de la distribution des enveloppes → attribue des personnages (si dispo) puis passe à ROLES_ASSIGNED/SESSION_ACTIVE."""
         # Attribution de personnages (si un catalogue existe)
         roles = await self._assign_characters_if_available()
 
@@ -97,7 +119,7 @@ class MJEngine:
             "text": "Les rôles sont attribués. La partie peut commencer."
         })
 
-        # Flag interne: prêt à suivre le session_plan (les rounds ne seront lancés qu'au prochain ordre automatique)
+        # Flag: prêt à suivre le session_plan
         self.set_phase(SESSION_ACTIVE)
         GAME_STATE.log_event("phase_change", {"phase": SESSION_ACTIVE})
         await WS.broadcast({
@@ -109,6 +131,7 @@ class MJEngine:
         return {"ok": True, "phase": SESSION_ACTIVE, "assigned_roles": roles}
 
     def status(self) -> Dict[str, Any]:
+        """Résumé utile pour le front MJ (phase, nombre de joueurs, présence d’un plan, round suivant)."""
         players = GAME_STATE.players or {}
         phase = self.phase()
         # Lecture (facultative) du plan
@@ -124,15 +147,11 @@ class MJEngine:
     # ----------------- Helpers internes -----------------
 
     async def _assign_envelopes_equitable(self) -> Dict[str, List[int]]:
-        """Répartit équitablement les enveloppes à cacher entre les joueurs.
-        - Lit story_seed.json → section "envelopes" (liste d'objets avec champ id)
-        - Stocke la répartition dans GAME_STATE.state['envelopes_to_hide']
-        - Envoie à chaque joueur sa liste via WS
-        """
+        """Répartit équitablement les enveloppes à cacher entre les joueurs (round-robin) et notifie via WS."""
         seed = _load_json(STORY_SEED_PATH, {})
         envelopes = seed.get("envelopes", [])
         if not envelopes:
-            # pas d'enveloppes configurées → on log seulement
+            # Pas d'enveloppes configurées → on log seulement
             GAME_STATE.state["envelopes_to_hide"] = {}
             GAME_STATE.save()
             return {}
@@ -141,7 +160,7 @@ class MJEngine:
         if not players_ids:
             return {}
 
-        # Round-robin
+        # Round-robin: distribution régulière
         distribution: Dict[str, List[int]] = {pid: [] for pid in players_ids}
         for idx, env in enumerate(envelopes):
             eid = env.get("id", idx + 1)
@@ -163,14 +182,12 @@ class MJEngine:
         return distribution
 
     async def _assign_characters_if_available(self) -> Dict[str, Any]:
-        """Attribue des personnages uniques si un fichier characters.json existe.
-        Si un joueur possède déjà un personnage, il n'est pas modifié.
-        """
+        """Attribue des personnages uniques depuis characters.json (si présent)."""
         if not CHARACTERS_PATH.exists():
             return {}
         try:
             catalog = json.loads(CHARACTERS_PATH.read_text(encoding="utf-8"))
-            # le catalogue peut être une liste d'objets {id,name,description,...}
+            # Le catalogue peut être une liste ou un dict {characters:[...]}
             if isinstance(catalog, dict) and "characters" in catalog:
                 pool = list(catalog["characters"])
             else:
@@ -186,7 +203,7 @@ class MJEngine:
             if not pool:
                 break
             char = pool.pop()
-            # Normalise
+            # Normalisation minimale
             name = char.get("name") or char.get("title") or char.get("id") or "Personnage"
             pdata["character"] = name
             pdata["character_id"] = char.get("id", name.lower().replace(" ", "_"))
@@ -196,7 +213,7 @@ class MJEngine:
                 "character": pdata["character"],
                 "character_id": pdata["character_id"]
             }
-            # Push WS ciblé
+            # Push WS ciblé (ne casse pas si WS indisponible)
             try:
                 await WS.send_to_player(pid, {
                     "type": "character_assigned",

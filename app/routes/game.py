@@ -1,3 +1,14 @@
+"""
+Module routes/game.py
+Rôle:
+- Endpoints publics relatifs à l’état de la partie et au ping du LLM.
+
+Intégrations:
+- GAME_STATE: snapshot (players/state/events).
+- NARRATIVE: canon narratif courant (plutôt côté MJ mais exposé ici).
+- generate_indice: test de vivacité LLM (diagnostic).
+- settings: pour exposer le modèle/provider testés.
+"""
 from fastapi import APIRouter
 from app.services.game_state import GAME_STATE
 from app.services.narrative_core import NARRATIVE
@@ -13,7 +24,7 @@ async def get_state():
     return {
         "players": GAME_STATE.players,
         "state": GAME_STATE.state,
-        "events": GAME_STATE.events[-100:],
+        "events": GAME_STATE.events[-100:],  # ← protection simple: derniers 100
     }
 
 
@@ -25,7 +36,11 @@ async def get_canon():
 
 @router.get("/test_llm")
 async def test_llm():
-    """Ping du modèle LLM en français (diagnostic rapide)."""
+    """
+    Ping du modèle LLM en français (diagnostic rapide).
+    - Retourne ok + modèle/provider + réponse courte.
+    - Utile pour vérifier config (Ollama/LLM local).
+    """
     try:
         result = generate_indice(
             "Dis simplement 'Bonjour, je suis prêt à générer des indices pour la murder party.'",

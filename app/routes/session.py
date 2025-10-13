@@ -1,3 +1,19 @@
+"""
+Module routes/session.py
+Rôle:
+- Contrôle "micro" d'une session (enchaînement des rounds, timers, résultats).
+- Délègue au `session_engine.SESSION` (orchestrateur de rounds).
+
+Sécurité:
+- Accès MJ uniquement (`mj_required`).
+
+Endpoints:
+- GET  /session/status       → snapshot de la session (phase, round, timers, etc.)
+- POST /session/start_next   → passe au prochain round (annonce + WS)
+- POST /session/confirm_start→ confirme le démarrage effectif du mini-jeu
+- POST /session/result       → enregistre les résultats (winners + meta arbitraire)
+- POST /session/abort_timer  → stoppe le timer "souple" en cours
+"""
 from __future__ import annotations
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, Depends
@@ -8,34 +24,29 @@ from app.services.session_engine import SESSION
 
 router = APIRouter(prefix="/session", tags=["session"], dependencies=[Depends(mj_required)])
 
-
 @router.get("/status")
 async def session_status():
     """Retourne l'état courant de la session (phase, round, timer, etc.)."""
     return SESSION.status()
-
 
 @router.post("/start_next")
 async def session_start_next():
     """Passe au round suivant (annonce intro + WS prompt pour démarrer le mini-jeu)."""
     return await SESSION.start_next_round()
 
-
 @router.post("/confirm_start")
 async def session_confirm_start():
     """Confirme que le mini-jeu courant est lancé (phase ACTIVE)."""
     return await SESSION.confirm_start()
 
-
 class ResultPayload(BaseModel):
     winners: Optional[List[str]] = []
     meta: Optional[Dict[str, Any]] = {}
 
-
 @router.post("/result")
 async def session_result(payload: ResultPayload):
-    """Signale la fin du mini-jeu (scores + gagnants). 
-    N'atteint pas le round suivant. 
+    """Signale la fin du mini-jeu (scores + gagnants).
+    N'atteint pas le round suivant.
     Utilise ensuite /session/start_next pour avancer.
     Exemple payload:
     {
@@ -46,7 +57,6 @@ async def session_result(payload: ResultPayload):
     winners = payload.winners or []
     meta = payload.meta or {}
     return await SESSION.finish_current_round(winners=winners, meta=meta)
-
 
 @router.post("/abort_timer")
 async def session_abort_timer():

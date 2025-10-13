@@ -1,3 +1,23 @@
+"""
+Service: session_engine.py
+Rôle:
+- Orchestration "micro" des rounds (intro → active → cooldown) et annonces WS.
+- Timer souple intégré (mi-temps + fin) sans forcer la clôture.
+
+I/O:
+- session_plan.json (liste ordonnée des rounds)
+- GAME_STATE.state["session"] (snapshot moteur de round)
+
+WS:
+- Diffuse des "narration" et des "prompt" pour piloter le front MJ/joueurs.
+
+API interne exposée aux routes:
+- SESSION.status()
+- SESSION.start_next_round()
+- SESSION.confirm_start()
+- SESSION.finish_current_round(winners, meta)
+- SESSION.start_timer(seconds), SESSION.abort_timer()
+"""
 from __future__ import annotations
 import asyncio
 import json
@@ -24,6 +44,7 @@ ROUND_COOLDOWN = "COOLDOWN"       # fin du mini-jeu, outro, distribution indices
 # -------------------- utilitaires --------------------
 
 def _load_plan() -> Dict[str, Any]:
+    """Lecture tolérante du plan depuis session_plan.json (retourne structure vide sinon)."""
     try:
         if SESSION_PLAN_PATH.exists():
             return json.loads(SESSION_PLAN_PATH.read_text(encoding="utf-8"))
@@ -33,9 +54,7 @@ def _load_plan() -> Dict[str, Any]:
 
 
 async def _narrate(event: str, text_hint: Optional[str] = None, extra: Optional[Dict[str, Any]] = None) -> str:
-    """Génère un court texte narratif FR via le LLM et le diffuse en WS (broadcast).
-    Retourne le texte généré (ou un fallback si LLM indisponible).
-    """
+    """Génère un court texte narratif FR via le LLM et le diffuse en WS (broadcast)."""
     prompt = (
         "Tu es la voix d'un narrateur immersif pour une murder party. "
         "Parle TOUJOURS en français, en 1 à 3 phrases courtes, sans spoiler ni révéler le coupable. "
@@ -72,6 +91,7 @@ class SessionEngine:
 
     # === état courant ===
     def _state(self) -> Dict[str, Any]:
+        """Retourne (et initialise si besoin) le sous-état 'session' dans GAME_STATE.state."""
         sess = GAME_STATE.state.setdefault("session", {})
         sess.setdefault("round_index", 0)  # 0 = pas encore commencé
         sess.setdefault("round_phase", ROUND_IDLE)
@@ -80,6 +100,7 @@ class SessionEngine:
         return sess
 
     def status(self) -> Dict[str, Any]:
+        """Snapshot synthétique pour UI MJ: phase, manche courante/suivante, timer actif."""
         sess = self._state()
         plan = _load_plan()
         rounds = plan.get("rounds", [])
@@ -104,32 +125,32 @@ class SessionEngine:
             return {"ok": False, "error": "session_plan.json sans rounds"}
 
         sess = self._state()
-        # si on est encore ACTIVE, empêcher avance involontaire
+        # Empêche d'avancer si une manche est déjà en cours de lancement/jeu
         if sess["round_phase"] in (ROUND_INTRO, ROUND_ACTIVE):
             return {"ok": False, "error": f"Round en cours (phase={sess['round_phase']})."}
 
-        # stop timer précédent si encore actif
+        # stop timer précédent si encore actif (sécurité)
         await self.abort_timer()
 
-        # incrémente index
+        # incrémente l'index de manche
         sess["round_index"] += 1
         idx = sess["round_index"]
         if idx > len(rounds):
-            # plus de rounds -> on peut ouvrir la phase accusation (pilotée ailleurs)
+            # plus de rounds → annonce de fin de session
             await _narrate("session_end", "La suite s'éclaircit : l'heure des accusations approche.")
             return {"ok": True, "done": True, "message": "Plus de rounds dans le plan."}
 
+        # phase INTRO + narration d'ouverture
         r = rounds[idx-1]
         sess["round_phase"] = ROUND_INTRO
         GAME_STATE.save()
 
-        # narration d'intro
         hint = None
         nar = r.get("narration") or {}
         hint = nar.get("intro") or f"Préparez-vous pour le mini-jeu '{r.get('mini_game','?')}'."
         await _narrate("round_intro", hint, {"round_index": idx, "mini_game": r.get("mini_game")})
 
-        # prompt MJ (tablette) pour démarrer le jeu réel
+        # Prompt UI MJ pour démarrer la manche côté "physique"
         await WS.broadcast({
             "type": "prompt",
             "kind": "start_minigame",
@@ -140,7 +161,7 @@ class SessionEngine:
         return {"ok": True, "round_index": idx, "phase": ROUND_INTRO, "round": r}
 
     async def confirm_start(self) -> Dict[str, Any]:
-        """Marque le round courant comme démarré (le MJ humain a lancé le jeu physique)."""
+        """Marque la manche comme DÉMARRÉE (le MJ humain a lancé le mini-jeu réel)."""
         sess = self._state()
         if sess["round_phase"] != ROUND_INTRO:
             return {"ok": False, "error": "Aucun round en phase INTRO."}
@@ -151,10 +172,9 @@ class SessionEngine:
         plan = _load_plan()
         r = plan.get("rounds", [])[idx-1]
 
-        # narration de départ
         await _narrate("round_start", f"Le mini-jeu '{r.get('mini_game','?')}' commence.")
 
-        # option: timer souple si 'max_seconds' est défini dans le round
+        # Timer souple si présent dans le plan
         max_sec = (r.get("max_seconds") or r.get("duration_seconds") or None)
         if max_sec:
             await self.start_timer(max_sec, {
@@ -164,15 +184,15 @@ class SessionEngine:
         return {"ok": True, "phase": ROUND_ACTIVE}
 
     async def finish_current_round(self, winners: Optional[list] = None, meta: Optional[dict] = None) -> Dict[str, Any]:
-        """Clôture le mini-jeu actuel (scores/résultats déjà fournis par ailleurs)."""
+        """Clôture la manche en cours (scores déjà calculés ailleurs)."""
         sess = self._state()
         if sess["round_phase"] != ROUND_ACTIVE:
             return {"ok": False, "error": "Aucun round actif à clôturer."}
 
-        # annule timer le cas échéant
+        # Arrête un timer éventuellement en cours
         await self.abort_timer()
 
-        # enregistre résultats
+        # Enregistre les résultats et passe en COOLDOWN
         idx = sess["round_index"]
         rr = sess["round_results"]
         rr[str(idx)] = {"winners": winners or [], "meta": meta or {}}
@@ -182,25 +202,20 @@ class SessionEngine:
         plan = _load_plan()
         r = plan.get("rounds", [])[idx-1]
 
-        # outro
+        # Outro + prompt pour préparer la suite
         nar = r.get("narration") or {}
         hint = nar.get("outro") or "Le silence retombe. Les regards s'échangent."
         await _narrate("round_end", hint, {"round_index": idx})
-
-        # annonce passage libre + prompt pour passer au suivant
-        await WS.broadcast({
-            "type": "prompt",
-            "kind": "next_round_ready",
-            "round_index": idx
-        })
+        await WS.broadcast({"type": "prompt", "kind": "next_round_ready", "round_index": idx})
         return {"ok": True, "phase": ROUND_COOLDOWN}
 
     # ---------------- timers souples ----------------
     async def start_timer(self, seconds: int, context: Optional[Dict[str, Any]] = None) -> None:
+        """Démarre un timer non bloquant avec alerte mi-temps et fin (broadcast)."""
         await self.abort_timer()
 
         async def _runner():
-            # mi-temps (si suffisamment long)
+            # Mi-temps si durée suffisante
             try:
                 if seconds >= 60:
                     await asyncio.sleep(max(1, seconds // 2))
@@ -214,7 +229,7 @@ class SessionEngine:
                     await asyncio.sleep(remain)
                 else:
                     await asyncio.sleep(seconds)
-                # Fin timer → notifier mais ne force PAS la fin (tu termineras via /session/result)
+                # Fin timer → notification non bloquante
                 await WS.broadcast({
                     "type": "narration",
                     "event": "timer_end",
@@ -227,6 +242,7 @@ class SessionEngine:
         self._timer_task = asyncio.create_task(_runner())
 
     async def abort_timer(self) -> None:
+        """Annule un timer en cours si nécessaire."""
         if self._timer_task and not self._timer_task.done():
             self._timer_task.cancel()
             try:

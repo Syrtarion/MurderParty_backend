@@ -1,3 +1,18 @@
+"""
+Service: mission_service.py
+Rôle:
+- Assigner des missions secrètes à tous les joueurs (coupable vs autres).
+- Utiliser `story_seed.json` (missions/coupable_missions) ou fallback LLM.
+
+Logique:
+- Le coupable (depuis NARRATIVE.canon) reçoit une mission 'primary' (points plus élevés).
+- Les autres piochent dans `missions` mélangées (type 'secondary').
+- Enregistrement dans `GAME_STATE.players[pid]["secret_mission"]` + logs.
+
+Robustesse:
+- Fallback LLM JSON si aucune mission coupable n'est définie.
+- Exceptions explicites si pas de joueurs / pas assez de missions.
+"""
 from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,7 +33,7 @@ DEFAULT_OTHER_POINTS = 10
 
 
 def load_seed() -> dict:
-    """Charge le fichier story_seed.json."""
+    """Charge le fichier story_seed.json (ou dict vide en cas de souci)."""
     if SEED_PATH.exists():
         try:
             with open(SEED_PATH, "r", encoding="utf-8") as f:
@@ -30,14 +45,14 @@ def load_seed() -> dict:
 
 @dataclass
 class MissionService:
-    """Assigne des missions secrètes à tous les joueurs en fonction du rôle."""
+    """Assigne des missions secrètes à tous les joueurs en fonction du rôle (coupable/autres)."""
     _lock: RLock = field(default_factory=RLock, init=False, repr=False)
 
     def assign_missions(self) -> Dict[str, Dict[str, Any]]:
         """
         Assigne des missions secrètes à tous les joueurs.
-        - Le coupable reçoit une mission spéciale
-        - Les autres joueurs reçoivent une mission unique depuis story_seed.json["missions"]
+        - Le coupable reçoit une mission spéciale (type=primary).
+        - Les autres joueurs reçoivent des missions uniques (type=secondary).
         """
         with self._lock:
             players = GAME_STATE.players

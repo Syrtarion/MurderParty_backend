@@ -1,3 +1,22 @@
+"""
+Service: narrative_core.py
+Rôle:
+- Maintenir le "canon narratif" (vérité verrouillée + indices + timeline).
+- Assurer une structure minimale même si le fichier JSON est incomplet.
+
+Structure par défaut:
+{
+  "locked": False,
+  "culprit": null, "weapon": null, "location": null, "motive": null,
+  "clues": {"crucial":[], "red_herrings":[], "ambiguous":[], "decor":[]},
+  "timeline": []
+}
+
+Helpers:
+- get_canon_summary(): vue synthétique pour le LLM.
+- get_sensitive_terms(): banlist pour anti-spoiler.
+- CONFESSION_PATTERNS: motifs regex de confessions à éviter.
+"""
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
@@ -39,12 +58,12 @@ class NarrativeCore:
             self.canon = data
 
     def save(self) -> None:
-        """Sauvegarde sécurisée du canon narratif."""
+        """Sauvegarde sécurisée du canon narratif (atomic via write_json)."""
         with self._lock:
             write_json(CANON_PATH, self.canon)
 
     def choose_culprit(self, culprit: str, weapon: str, location: str, motive: str) -> Dict[str, Any]:
-        """Verrouille le canon narratif (coupable, arme, lieu, mobile)."""
+        """Verrouille le canon narratif (coupable, arme, lieu, mobile). Si déjà locked, retourne tel quel."""
         with self._lock:
             if self.canon.get("locked"):
                 return self.canon
@@ -59,7 +78,7 @@ class NarrativeCore:
             return self.canon
 
     def append_clue(self, kind: str, clue: Dict[str, Any]) -> None:
-        """Ajoute un indice dans la catégorie correspondante."""
+        """Ajoute un indice dans la catégorie correspondante (création bucket si nécessaire)."""
         with self._lock:
             bucket = self.canon.setdefault("clues", {}).setdefault(kind, [])
             bucket.append(clue)
@@ -88,6 +107,7 @@ NARRATIVE.load()
 
 # ---- contexte & anti-spoiler helpers ----
 def get_canon_summary() -> dict:
+    """Résumé compact du canon pour injection côté LLM (ne jamais afficher aux joueurs)."""
     c = NARRATIVE.canon
     return {
         "locked": c.get("locked", False),
@@ -105,6 +125,7 @@ def get_canon_summary() -> dict:
 
 
 def get_sensitive_terms() -> List[str]:
+    """Construit une banlist de mots/expressions sensibles (culprit/weapon/location/motive)."""
     c = NARRATIVE.canon
     terms = []
     for k in ("culprit", "weapon", "location", "motive"):
@@ -125,6 +146,7 @@ def get_sensitive_terms() -> List[str]:
     return out
 
 
+# Motifs de confessions explicites à filtrer côté LLM
 CONFESSION_PATTERNS: List[re.Pattern] = [
     re.compile(r"\b(je suis|c'?est|j'avoue|confesse)\b.*\b(coupable|meurtrier|meurtrière)\b", re.IGNORECASE),
     re.compile(r"\b([A-ZÉÈÀÂÎÔÛ][a-zéèàâêîôû\-]+)\b.*\b(a tué|a assassiné|est le coupable)\b", re.IGNORECASE),

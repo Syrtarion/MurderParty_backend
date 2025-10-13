@@ -1,3 +1,18 @@
+"""
+Service: game_state.py
+Rôle:
+- Stocker l'état global de la partie (players, state, events) et le persister.
+- Fournir un singleton `GAME_STATE` partagé par l’ensemble du backend.
+
+Fichiers:
+- players.json   : dictionnaire {player_id: {...}}
+- game_state.json: clés de pilotage (phase, flags, story_seed éventuel…)
+- events.json    : liste chronologique d'événements (trace globale)
+
+Notes:
+- RLock interne pour protéger la consistance lors d'appels concurrents.
+- `register_event()` écrit sur disque + log en mémoire + print console (debug).
+"""
 # app/services/game_state.py
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,6 +47,7 @@ class GameState:
     # Gestion fichiers de session
     # -----------------------------
     def load(self) -> None:
+        """Charge players/state/events depuis le disque (ou valeurs par défaut)."""
         with self._lock:
             self.players = read_json(PLAYERS_PATH) or {}
             self.state = read_json(STATE_PATH) or {
@@ -43,6 +59,7 @@ class GameState:
             self.events = read_json(EVENTS_PATH) or []
 
     def save(self) -> None:
+        """Persiste players/state/events sur disque (synchronisation simple)."""
         with self._lock:
             write_json(PLAYERS_PATH, self.players)
             write_json(STATE_PATH, self.state)
@@ -52,7 +69,7 @@ class GameState:
     # Gestion des joueurs
     # -----------------------------
     def add_player(self, display_name: Optional[str] = None) -> str:
-        """Ajoute un joueur et log immédiatement l'événement."""
+        """Ajoute un joueur et log immédiatement l'événement (idempotent pour l’audit)."""
         with self._lock:
             pid = str(uuid4())
             pdata = {
@@ -71,7 +88,7 @@ class GameState:
     # Gestion des événements
     # -----------------------------
     def _log_event_nolock(self, kind: str, payload: Dict[str, Any], scope: str = "system") -> None:
-        """Enregistre un événement interne (sans verrou)."""
+        """Enregistre un événement interne (sans verrou) — utilitaire privé."""
         if not isinstance(self.events, list):
             self.events = []
         self.events.append({
@@ -82,7 +99,7 @@ class GameState:
         })
 
     def log_event(self, kind: str, payload: Dict[str, Any], scope: str = "system") -> None:
-        """Enregistre un événement avec verrou (sécurisé)."""
+        """Enregistre un événement avec verrou (thread-safe) puis sauvegarde."""
         with self._lock:
             self._log_event_nolock(kind, payload, scope)
             self.save()
@@ -92,7 +109,7 @@ class GameState:
 # Outils externes
 # -----------------------------
 def save_json(path: Path, data: dict) -> None:
-    """Sauvegarde JSON robuste."""
+    """Sauvegarde JSON robuste (utilisé ponctuellement pour d'autres fichiers)."""
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
@@ -106,7 +123,7 @@ def save_json(path: Path, data: dict) -> None:
 _instance = None
 
 def get_game_state() -> GameState:
-    """Garantit un seul GameState partagé dans tout le backend."""
+    """Garantit une unique instance `GameState` pour tout le backend (lazy-load)."""
     global _instance
     if _instance is None:
         _instance = GameState()
@@ -122,8 +139,8 @@ GAME_STATE = get_game_state()
 # -----------------------------
 def register_event(kind: str, details: dict | None = None, scope: str = "system") -> dict:
     """
-    Helper pour enregistrer un événement globalement dans app/data/events.json.
-    Utilisé par les endpoints (intro, canon, narration, épilogue...).
+    Helper centralisé pour enregistrer un événement dans app/data/events.json
+    + Log en mémoire via GAME_STATE.log_event pour un accès immédiat aux endpoints.
     """
     event = {
         "kind": kind,
@@ -132,7 +149,7 @@ def register_event(kind: str, details: dict | None = None, scope: str = "system"
         "ts": time.time()
     }
 
-    # Chargement et écriture directe du fichier JSON
+    # Chargement et écriture directe du fichier JSON (append)
     try:
         if EVENTS_PATH.exists():
             existing = json.loads(EVENTS_PATH.read_text(encoding="utf-8"))
@@ -144,9 +161,9 @@ def register_event(kind: str, details: dict | None = None, scope: str = "system"
     existing.append(event)
     EVENTS_PATH.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    # Log console pour debug
+    # Log console pour debug (traçabilité)
     print(f"[EVENT REGISTERED] {kind} (scope={scope}) → {details or {}}")
 
-    # Ajout en mémoire
+    # Ajout en mémoire (events du runtime) pour lecture immédiate
     GAME_STATE.log_event(kind, details or {}, scope)
     return event

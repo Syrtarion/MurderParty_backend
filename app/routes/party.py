@@ -1,3 +1,22 @@
+"""
+Module routes/party.py
+Rôle:
+- Gestion du "plan de soirée" (enchaînement des mini-jeux/rounds).
+- Charge un plan (séquence d'IDs de jeux) et lance le "prochain round".
+
+Intégrations:
+- SESSION_PLAN: stockage du plan courant + curseur.
+- CATALOG: validation des IDs jeux utilisés dans le plan.
+- RUNTIME: création des sessions de mini-jeux.
+- random_teams: tirage d'équipes si mode team.
+
+Sécurité:
+- Accès MJ (`mj_required`).
+
+Endpoints:
+- POST /party/load_plan: enregistre la séquence des jeux (avec round optionnel).
+- POST /party/next_round: crée la session suivante et avance le curseur.
+"""
 from fastapi import APIRouter, Header, HTTPException
 from fastapi import Depends
 from app.deps.auth import mj_required
@@ -14,6 +33,7 @@ from uuid import uuid4
 router = APIRouter(prefix="/party", tags=["party"], dependencies=[Depends(mj_required)])
 
 def _mj(auth: str | None):
+    """Vérification Bearer MJ optionnelle (non utilisée par défaut)."""
     if not auth or not auth.startswith("Bearer ") or auth.split(" ",1)[1] != settings.MJ_TOKEN:
         raise HTTPException(status_code=403, detail="MJ auth required")
 
@@ -23,7 +43,10 @@ class PlanPayload(BaseModel):
 
 @router.post("/load_plan")
 async def load_plan(p: PlanPayload):
-    # Validation minimale : ids existants dans le catalogue
+    """
+    Charge un plan de jeux (séquence d'IDs).
+    - Valide que tous les IDs existent dans le catalogue.
+    """
     ids = [g.get("id") for g in p.games_sequence]
     missing = [i for i in ids if not CATALOG.get(i)]
     if missing:
@@ -32,7 +55,7 @@ async def load_plan(p: PlanPayload):
     return {"ok": True, "loaded": len(p.games_sequence)}
 
 class NextRoundPayload(BaseModel):
-    # pour le mode team sans teams fournies, on peut auto-tirer depuis une liste de joueurs
+    # Pour le mode team sans équipes fournies, on peut tirer automatiquement
     participants: Optional[List[str]] = None
     auto_team_count: Optional[int] = None
     auto_team_size: Optional[int] = None
@@ -40,6 +63,11 @@ class NextRoundPayload(BaseModel):
 
 @router.post("/next_round")
 async def next_round(body: NextRoundPayload):
+    """
+    Démarre le round suivant selon le plan:
+    - Crée une nouvelle session RUNTIME (solo ou team).
+    - Incrémente le curseur du plan.
+    """
     current = SESSION_PLAN.current()
     if not current:
         raise HTTPException(404, "No current round in plan. Did you load a plan?")
@@ -69,6 +97,6 @@ async def next_round(body: NextRoundPayload):
         session["teams"] = teams
 
     RUNTIME.create(session)
-    # avance le curseur
+    # Avance le curseur du plan (round suivant prêt)
     SESSION_PLAN.next()
     return {"ok": True, "session": session}

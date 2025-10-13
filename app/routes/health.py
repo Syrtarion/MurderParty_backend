@@ -1,3 +1,12 @@
+"""
+Module routes/health.py
+Rôle:
+- Endpoints de santé (service OK + ping LLM).
+
+Intégrations:
+- settings: nom d’app + paramètres LLM.
+- generate_indice: ping rapide du provider / modèle (latence, échantillon).
+"""
 from fastapi import APIRouter
 import time
 
@@ -8,10 +17,16 @@ router = APIRouter(prefix="/health", tags=["health"])
 
 @router.get("")
 async def health():
+    """Renvoie un OK minimal avec le nom de service configuré."""
     return {"ok": True, "service": settings.APP_NAME}
 
 @router.get("/llm")
 async def health_llm():
+    """
+    Vérifie la disponibilité du LLM en mesurant une latence simple.
+    - Prompt court ("Réponds: pong.") pour minimiser le temps de calcul.
+    - Retourne provider, modèle, latence en secondes et un aperçu (sample).
+    """
     t0 = time.perf_counter()
     try:
         r = generate_indice("Réponds: pong.", kind="decor")
@@ -21,7 +36,7 @@ async def health_llm():
             "provider": settings.LLM_PROVIDER,
             "model": settings.LLM_MODEL,
             "latency_s": round(dt, 3),
-            "sample": r.get("text", "")[:120]
+            "sample": r.get("text", "")[:120]  # ← coupe l’aperçu
         }
     except Exception as e:
         dt = time.perf_counter() - t0

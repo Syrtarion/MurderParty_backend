@@ -1,3 +1,22 @@
+"""
+Service: narrative_dynamic.py
+Rôle:
+- Générer et pousser des événements narratifs dynamiques en temps réel:
+  • Fin de mini-jeu (narration + indices gagnants/perdants)
+  • Découverte d'enveloppe (narration + indice public)
+  • Transitions libres (thème/ambiance)
+
+Intégrations:
+- run_llm(): génère des JSON narratifs simples (prompts structurés).
+- NARRATIVE: persistance timeline + sauvegarde.
+- GAME_STATE: ajout d’indices privés aux joueurs.
+- WS: broadcast global ou envoi privé selon le scope.
+
+Utilities:
+- _fire_and_forget(): lance un envoi WS sans await bloquant (selon contexte).
+- _safe_json_extract(): tolère du texte hors JSON et isole le bloc {…}.
+- _default_clue(): valeurs par défaut si LLM renvoie un JSON incomplet.
+"""
 from __future__ import annotations
 import json
 import random
@@ -15,10 +34,12 @@ Scope = Literal["private", "public", "broadcast", "admin"]
 def _now() -> float: return time.time()
 
 def _canon() -> Dict:
+    """Assure l'existence d'une clé timeline dans le canon et retourne le dict canon."""
     NARRATIVE.canon.setdefault("timeline", [])
     return NARRATIVE.canon
 
 def _fire_and_forget(coro):
+    """Exécute une coroutine sans bloquer l'appelant (event loop ou run)."""
     try:
         loop = asyncio.get_running_loop()
         loop.create_task(coro)
@@ -26,6 +47,7 @@ def _fire_and_forget(coro):
         asyncio.run(coro)
 
 def _append_timeline(event: str, text: str, scope: Scope = "public", extra: Optional[Dict] = None):
+    """Ajoute une entrée dans la timeline + notifie WS en fonction du scope."""
     entry = {"ts": _now(), "event": event, "text": text.strip(), "scope": scope, "extra": (extra or {})}
     _canon()["timeline"].append(entry)
     NARRATIVE.save()
@@ -36,6 +58,7 @@ def _append_timeline(event: str, text: str, scope: Scope = "public", extra: Opti
         _fire_and_forget(WS.send_to_player(extra["to"], payload))
 
 def _safe_json_extract(text: str) -> Optional[Dict]:
+    """Essaye de parser le texte en JSON; sinon isole le premier bloc {...} s'il existe."""
     if not text: return None
     try: return json.loads(text)
     except json.JSONDecodeError:
@@ -46,6 +69,7 @@ def _safe_json_extract(text: str) -> Optional[Dict]:
     return None
 
 def _default_clue(kind: str, source: str) -> Dict:
+    """Construit un indice par défaut si la génération LLM échoue/incomplète."""
     base = {"text": "Un détail attire votre attention, mais son sens reste flou.", "type": "ambiguous", "source": source, "correlation_key": None}
     if kind == "crucial":
         base["text"] = "Un élément concret semble relier plusieurs pistes, sans certitude absolue."
@@ -58,6 +82,7 @@ def _default_clue(kind: str, source: str) -> Dict:
 def _player_ids() -> List[str]: return list(GAME_STATE.players.keys())
 
 def add_clue_to_player(player_id: str, clue: Dict, notify_ws: bool = True):
+    """Ajoute un indice au joueur (inventaire `found_clues`) + notification WS privée + détection de corrélations."""
     player = GAME_STATE.players.get(player_id)
     if not player: return
     player.setdefault("found_clues", [])
@@ -70,6 +95,7 @@ def add_clue_to_player(player_id: str, clue: Dict, notify_ws: bool = True):
     _check_player_correlations(player_id)
 
 def _check_player_correlations(player_id: str):
+    """Compteur par `correlation_key`: si >=2 indices concordants → message privé 'correlation_unlocked' + event audit."""
     player = GAME_STATE.players.get(player_id)
     if not player: return
     clues = player.get("found_clues", [])
@@ -90,6 +116,7 @@ def _check_player_correlations(player_id: str):
             register_event("correlation_unlocked", {"player_id": player_id, "key": key})
 
 def _prompt_mini_game_bundle(canon: Dict, mode: str) -> str:
+    """Construit un prompt JSON strict pour fin de mini-jeu (narration + 2 indices)."""
     return f"""
 Tu es le moteur narratif d'une murder party. Réponds UNIQUEMENT en JSON strict.
 Canon actuel :
@@ -112,6 +139,7 @@ Format strict :
 """.strip()
 
 def _prompt_envelope_event(canon: Dict, envelope_id: str|int) -> str:
+    """Prompt JSON strict pour une enveloppe scannée (narration + indice public)."""
     return f"""
 Tu es le narrateur d'une murder party. Réponds en JSON strict.
 Une enveloppe (id {envelope_id}) vient d'être découverte. Indice diffusé à tous.
@@ -125,10 +153,12 @@ Format :
 """.strip()
 
 def _llm_json(prompt: str) -> Optional[Dict]:
+    """Exécute le LLM et tente d'extraire un JSON via `_safe_json_extract`."""
     res = run_llm(prompt)
     return _safe_json_extract(res.get("text", ""))
 
 def handle_mini_game_result(context: Dict):
+    """Traitement fin de mini-jeu: timeline publique + indices gagnants/perdants + events d'audit."""
     winners = context.get("winners", [])
     losers = context.get("losers", [])
     mode = context.get("mode", "solo")
@@ -144,6 +174,7 @@ def handle_mini_game_result(context: Dict):
     for pid in losers:  add_clue_to_player(pid, loser_clue)
 
 def handle_envelope_scanned(context: Dict):
+    """Traitement enveloppe scannée: timeline broadcast + indice public à tous + event d'audit."""
     envelope_id = context.get("envelope_id")
     player_id = context.get("player_id")
     canon = _canon()
@@ -156,6 +187,7 @@ def handle_envelope_scanned(context: Dict):
     for pid in _player_ids(): add_clue_to_player(pid, clue)
 
 def handle_story_event(context: Dict):
+    """Narration libre (thème/ambiance) en 2 phrases FR, sans spoiler, poussée en broadcast."""
     theme = context.get("theme", "transition")
     canon = _canon()
     prompt = f"""
@@ -170,6 +202,7 @@ Thème : {theme}
     register_event("narration_auto", {"theme": theme})
 
 def generate_dynamic_event(event_type: str, context: Dict):
+    """Point d'entrée unique pour générer un événement dynamique selon `event_type`."""
     if event_type == "mini_game_end":
         handle_mini_game_result(context)
     elif event_type == "envelope_scanned":
