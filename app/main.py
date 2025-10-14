@@ -44,7 +44,7 @@ from app.routes import auth as auth_router
 
 from app.config.settings import settings
 
-# --- App FastAPI principale ---
+# --- App FastAPI principale  ---
 app = FastAPI(title="Murderparty Backend")
 
 # CORS REST (resserré sur le front)
