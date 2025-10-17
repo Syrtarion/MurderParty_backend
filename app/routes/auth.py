@@ -2,11 +2,13 @@
 Module routes/auth.py
 Rôle:
 - Gère l'inscription et la connexion des joueurs.
-- Attribue automatiquement un personnage et une enveloppe à l'inscription.
+- Attribue automatiquement un personnage à l'inscription.
+  (⚠️ Les enveloppes sont désormais distribuées après le verrouillage des inscriptions
+   via /master/lock_join et le service dédié, pour une répartition équitable.)
 
 Intégrations:
 - `GAME_STATE`: création des joueurs, log d'événements, persistance.
-- `CHARACTERS`: attribution des personnages/enveloppes via story_seed.
+- `CHARACTERS`: attribution des personnages via story_seed.
 - Hash de mot de passe: `bcrypt` si dispo, sinon fallback PBKDF2 (sécurisé).
 
 Sécurité:
@@ -109,20 +111,29 @@ def register(data: RegisterIn):
     Étapes:
     1) Ajout joueur via `GAME_STATE.add_player` + hash du mot de passe.
     2) Attribution d’un personnage (CHARACTERS.assign_character).
-    3) Attribution d’enveloppes (par défaut: 1).
-    4) Log + persist via `GAME_STATE.save()`.
+    3) Log + persist via `GAME_STATE.save()`.
+
+    ⚠️ Changement de règle (équité) :
+       ➜ PAS d’attribution d’enveloppes ici.
+       ➜ Les enveloppes sont distribuées équitablement APRÈS le verrouillage des inscriptions
+         via /master/lock_join (service envelopes).
     """
     # Autorisé uniquement si les inscriptions sont ouvertes
-    join_locked = bool(GAME_STATE.state.get("join_locked", True))  # défaut: fermé
+    # FIX: par défaut les inscriptions sont OUVERTES (False), et le MJ les verrouille ensuite
+    join_locked = bool(GAME_STATE.state.get("join_locked", False))  # FIX
     if join_locked:
         raise HTTPException(403, "Registration is closed.")
 
+    name = data.name.strip()
+    if not name:
+        raise HTTPException(400, "Missing name.")
+
     # nom unique
-    if _find_player_by_name(data.name):
+    if _find_player_by_name(name):
         raise HTTPException(409, "Name already taken.")
 
     # 1) créer le joueur (via le flow GAME_STATE existant)
-    pid = GAME_STATE.add_player(display_name=data.name)
+    pid = GAME_STATE.add_player(display_name=name)
     p = GAME_STATE.players[pid]
     p["password_hash"] = hash_password(data.password)
 
@@ -132,26 +143,15 @@ def register(data: RegisterIn):
         p["character"] = character.get("name")
         p["character_id"] = character.get("id")
 
-    # 3) attribuer des enveloppes depuis story_seed (1 par défaut)
-    envelopes = CHARACTERS.assign_envelopes(pid, count=1)
-    if envelopes:
-        p["envelopes"] = [
-            {
-                "id": e.get("id"),
-                "description": e.get("description"),
-                "object_type": e.get("object_type"),
-            }
-            for e in envelopes
-        ]
+    # (plus d'attribution d'enveloppes ici — voir /master/lock_join)
 
-    # 4) log + save (pas de missions ici)
+    # 3) log + save (pas de missions ici)
     GAME_STATE.log_event(
         "player_join",
         {
             "player_id": pid,
-            "display_name": data.name,
+            "display_name": name,
             "character": character.get("name") if character else None,
-            "envelopes": [e.get("id") for e in envelopes] if envelopes else [],
         },
     )
     GAME_STATE.save()
@@ -167,7 +167,11 @@ def login(data: LoginIn):
     - 401 si mot de passe invalide.
     - Retourne `player_id`, `name` (display_name) et `character_id` si existante.
     """
-    p = _find_player_by_name(data.name)
+    name = data.name.strip()
+    if not name:
+        raise HTTPException(400, "Missing name.")
+
+    p = _find_player_by_name(name)
     if not p:
         raise HTTPException(404, "Player not found.")
     hashed = p.get("password_hash")
@@ -175,6 +179,24 @@ def login(data: LoginIn):
         raise HTTPException(401, "Invalid credentials.")
     return AuthOut(
         player_id=p["player_id"],
-        name=p.get("display_name", data.name),
+        name=p.get("display_name", name),
+        character_id=p.get("character_id"),
+    )
+
+
+@router.get("/me", response_model=AuthOut)
+def me(player_id: str):
+    """
+    Récupération du profil joueur minimal (pour hydrater le front).
+    - Le front appelle /auth/me?player_id=...
+    - Renvoie name (display_name) & character_id.
+    - Les enveloppes (vue {num,id}) sont dans GAME_STATE.players[pid]["envelopes"] si besoin côté /game/state.
+    """
+    p = GAME_STATE.players.get(player_id)
+    if not p:
+        raise HTTPException(404, "Player not found.")
+    return AuthOut(
+        player_id=p["player_id"],
+        name=p.get("display_name", ""),
         character_id=p.get("character_id"),
     )

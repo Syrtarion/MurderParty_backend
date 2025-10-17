@@ -19,6 +19,9 @@ Intégrations:
 from fastapi import APIRouter, Depends, HTTPException, Header
 from pydantic import BaseModel, Field
 from fastapi.responses import JSONResponse
+from typing import Optional
+import json, os
+
 from app.deps.auth import mj_required
 from app.config.settings import settings
 from app.services.narrative_core import NARRATIVE
@@ -26,6 +29,13 @@ from app.services.game_state import GAME_STATE
 from app.services.llm_engine import generate_indice
 from app.services.ws_manager import WS
 from app.services.narrative_dynamic import generate_dynamic_event
+
+# Enveloppes : la distribution lit d’abord le GAME_STATE, sinon le story_seed sur disque
+from app.services.envelopes import (
+    distribute_envelopes_equitable,
+    summary_for_mj,
+    reset_envelope_assignments,
+)
 
 router = APIRouter(prefix="/master", tags=["master"], dependencies=[Depends(mj_required)])
 
@@ -155,28 +165,52 @@ async def get_full_timeline():
     }
     return JSONResponse(content={"ok": True, "meta": meta, "timeline": timeline})
 
+
 # --------------------------------------------------
-# Verrouiller la phase JOIN (plus de créations de joueurs)
+# Verrouiller / Déverrouiller la phase JOIN
 # --------------------------------------------------
 @router.post("/lock_join")
 async def lock_join():
     """
-    Verrouille la phase d'inscription (empêche /auth/register).
-    - Log + persist + broadcast WS d’un event 'join_locked'.
+    Verrouille la phase d'inscription (empêche /auth/register) ET lance la distribution équitable.
+    - Met à jour la phase -> ENVELOPES_DISTRIBUTION (les enveloppes doivent être cachées ensuite).
+    - Distribution: lit d’abord le GAME_STATE; si aucune enveloppe, lit le story_seed.json (disque).
+    - Log + persist.
+    - Diffuse en WS : 'join_locked', 'phase_change', 'envelopes_update'.
     """
     try:
+        # 1) verrou + phase
         GAME_STATE.state["join_locked"] = True
+        GAME_STATE.state["phase_label"] = "ENVELOPES_DISTRIBUTION"
         GAME_STATE.log_event("join_locked", {})
+        GAME_STATE.log_event("phase_change", {"phase": "ENVELOPES_DISTRIBUTION"})
+
+        # 2) distribution (équitable & idempotent, vue joueur = num/id uniquement)
+        distribution_summary = distribute_envelopes_equitable()
+        GAME_STATE.log_event("envelopes_distributed", distribution_summary)
+
+        # 3) persist
         GAME_STATE.save()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Cannot lock join: {e}")
+        raise HTTPException(status_code=500, detail=f"Cannot lock/distribute: {e}")
+
+    # 4) broadcast temps réel
     await WS.broadcast_type("event", {"kind": "join_locked"})
-    return {"ok": True, "join_locked": True}
+    await WS.broadcast_type("event", {"kind": "phase_change", "phase": "ENVELOPES_DISTRIBUTION"})
+    await WS.broadcast_type("event", {"kind": "envelopes_update"})
+
+    return {
+        "ok": True,
+        "join_locked": True,
+        "phase": "ENVELOPES_DISTRIBUTION",
+        "distribution": distribution_summary,
+    }
+
 
 @router.post("/unlock_join")
 async def unlock_join():
     """
-    Rouvre la phase d'inscription.
+    Rouvre la phase d'inscription (sans changer la phase courante).
     - Log + persist + broadcast WS d’un event 'join_unlocked'.
     """
     try:
@@ -187,3 +221,65 @@ async def unlock_join():
         raise HTTPException(status_code=500, detail=f"Cannot unlock join: {e}")
     await WS.broadcast_type("event", {"kind": "join_unlocked"})
     return {"ok": True, "join_locked": False}
+
+
+# --------------------------------------------------
+# Diagnostics & maintenance enveloppes / seed
+#   - summary: préfère l’état en mémoire, sinon retombe sur le seed disque
+#   - reset: enlève toutes les assignations en mémoire
+#   - reload: recharge le seed DISQUE -> mémoire (chemin par défaut ou fourni)
+# --------------------------------------------------
+@router.get("/envelopes/summary")
+async def envelopes_summary(include_hints: bool = False):
+    """
+    Vue MJ: résumé enveloppes. PRIORITÉ: GAME_STATE (mémoire). Si rien en mémoire,
+    retombe sur le story_seed du disque (géré dans summary_for_mj()).
+    """
+    return summary_for_mj(include_hints=include_hints)
+
+@router.post("/envelopes/reset")
+async def envelopes_reset():
+    """
+    Réinitialise assigned_player_id=None pour TOUTES les enveloppes du seed en mémoire,
+    resynchronise la vue joueur, sauvegarde + notifie les fronts.
+    """
+    res = reset_envelope_assignments()
+    await WS.broadcast_type("event", {"kind": "envelopes_update"})
+    return res
+
+def _seed_default_path() -> str:
+    """
+    FIX: fallback = app/data/story_seed.json
+    Essaie d’abord settings.STORY_SEED_PATH si dispo (pour override via .env),
+    sinon utilise le chemin par défaut unique du repo: app/data/story_seed.json.
+    """
+    try:
+        if getattr(settings, "STORY_SEED_PATH", None):
+            return str(settings.STORY_SEED_PATH)
+    except Exception:
+        pass
+    # FIX: utiliser un chemin robuste basé sur ce fichier pour atteindre app/data/...
+    from pathlib import Path
+    app_dir = Path(__file__).resolve().parents[1]  # -> .../app/
+    return str((app_dir / "data" / "story_seed.json").resolve())
+
+@router.post("/seed/reload")
+async def seed_reload(path: Optional[str] = None):
+    """
+    Recharge le story_seed depuis le disque dans GAME_STATE.state["story_seed"], sans redémarrer.
+    - path optionnel: si omis, utilise _seed_default_path()
+    """
+    seed_path = path or _seed_default_path()
+    if not os.path.exists(seed_path):
+        raise HTTPException(404, f"Seed file not found: {seed_path}")
+    try:
+        with open(seed_path, "r", encoding="utf-8") as f:
+            seed = json.load(f)
+        GAME_STATE.state["story_seed"] = seed
+        GAME_STATE.log_event("seed_reloaded", {"path": seed_path, "envelopes_count": len(seed.get("envelopes", []))})
+        GAME_STATE.save()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Seed reload failed: {e}")
+
+    await WS.broadcast_type("event", {"kind": "seed_reloaded"})
+    return {"ok": True, "path": seed_path, "envelopes_count": len(seed.get("envelopes", []))}
