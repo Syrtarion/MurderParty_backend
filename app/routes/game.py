@@ -8,8 +8,17 @@ Intégrations:
 - NARRATIVE: canon narratif courant (plutôt côté MJ mais exposé ici).
 - generate_indice: test de vivacité LLM (diagnostic).
 - settings: pour exposer le modèle/provider testés.
+
+# FIX (Lot A):
+- /game/state retourne:
+  - phase_label, join_locked
+  - players: [{player_id, name, character_id}]
+  - si ?player_id=... -> bloc "me" avec envelopes [{num,id}]
 """
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import JSONResponse
+from typing import Any, Dict, List, Optional
+
 from app.services.game_state import GAME_STATE
 from app.services.narrative_core import NARRATIVE
 from app.services.llm_engine import generate_indice
@@ -17,22 +26,52 @@ from app.config.settings import settings
 
 router = APIRouter(prefix="/game", tags=["game"])
 
-
-@router.get("/state")
-async def get_state():
-    """État courant du jeu (joueurs, phase, derniers événements)."""
+def _public_player_view(p: Dict[str, Any]) -> Dict[str, Any]:
+    """Vue publique d'un joueur (pas de password_hash, etc.)."""
     return {
-        "players": GAME_STATE.players,
-        "state": GAME_STATE.state,
-        "events": GAME_STATE.events[-100:],  # ← protection simple: derniers 100
+        "player_id": p["player_id"],
+        "name": p.get("display_name", ""),
+        "character_id": p.get("character_id"),
     }
 
+@router.get("/state")
+def get_state(player_id: Optional[str] = Query(default=None, description="Optionnel, pour inclure 'me'")):
+    """
+    Etat public du jeu (Lot A):
+    - phase_label, join_locked
+    - players : [ {player_id, name, character_id}, ... ]
+    - me (optionnel si player_id fourni) : { player_id, name, character_id, envelopes: [{num,id}] }
+    """
+    phase = GAME_STATE.state.get("phase_label", "JOIN")
+    join_locked = bool(GAME_STATE.state.get("join_locked", False))
+
+    players_public: List[Dict[str, Any]] = [
+        _public_player_view(p) for p in GAME_STATE.players.values()
+    ]
+
+    payload: Dict[str, Any] = {
+        "phase_label": phase,
+        "join_locked": join_locked,
+        "players": players_public,
+    }
+
+    if player_id:
+        me = GAME_STATE.players.get(player_id)
+        if not me:
+            raise HTTPException(status_code=404, detail="Player not found")
+        payload["me"] = {
+            "player_id": me["player_id"],
+            "name": me.get("display_name", ""),
+            "character_id": me.get("character_id"),
+            "envelopes": me.get("envelopes", []),  # vue minimale {num,id}
+        }
+
+    return JSONResponse(content=payload)
 
 @router.get("/canon")
 async def get_canon():
     """Canon narratif courant (attention: privé côté MJ)."""
     return NARRATIVE.canon
-
 
 @router.get("/test_llm")
 async def test_llm():

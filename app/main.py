@@ -10,9 +10,10 @@ Rôle
 
 Notes
 -----
-- Les importations des routeurs sont explicites pour éviter les surprises d'auto-discovery.
+- Les importations des routeurs sont explicites pour éviter les surprises d’auto-discovery.
 - `debug_ws` est monté seulement si `ROUTER_ENABLED` est True (pratique en dev).
 - Garder la liste `ALLOWED_ORIGINS` en phase avec les URLs du front.
+- ⚠️ Le middleware CORS doit être ajouté AVANT les include_router.
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -41,29 +42,35 @@ from app.routes.timeline import router as timeline_router
 from app.routes.master_epilogue import router as master_epilogue_router
 from app.routes import debug_ws
 from app.routes import auth as auth_router
+from app.routes.auth_mj import router as auth_mj_router
 
 from app.config.settings import settings
 
 # --- App FastAPI principale  ---
 app = FastAPI(title="Murderparty Backend")
 
-# CORS REST (resserré sur le front)
-# ⚠️ Mettre ici toutes les origines autorisées (domaines du front en dev/prod).
+# ===========================
+# CORS (dev: permissif)
+# ===========================
+# En dev on autorise localhost, en prod pense à restreindre.
 ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
-    # "http://192.168.1.xx:3000"  # si front sur autre machine du LAN
+    # "http://192.168.1.xx:3000",  # front sur une autre machine du LAN
 ]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,   # ← whitelist des frontends autorisés
-    allow_credentials=True,          # ← cookies/headers d'auth si besoin
+    allow_credentials=True,          # ← nécessaire si tu passes des cookies
     allow_methods=["*"],             # ← autorise toutes les méthodes HTTP
-    allow_headers=["*"],             # ← autorise tous les headers custom
+    allow_headers=["*"],             # ← autorise tous les headers custom (dont Authorization)
 )
 
+# ===========================
 # Montage des routers
-# Chaque router déclare son `prefix` et ses `tags`. L'ordre n'a pas d'effet fonctionnel ici.
+# ===========================
+# ⚠️ Laisse les protections MJ au niveau DES ROUTES (Depends(mj_required) sur les routes),
+#    pas sur le router entier, pour ne pas bloquer les préflights OPTIONS.
 app.include_router(game_router)
 app.include_router(players_router)
 app.include_router(master_router)
@@ -79,11 +86,12 @@ app.include_router(master_canon_router)
 app.include_router(master_reveal_router)
 app.include_router(master_intro_router)
 app.include_router(admin_reset_router)
-app.include_router(party_router)  # commente cette ligne si tu n'utilises pas party.py
+app.include_router(party_router)               # routes /party (avec Depends(mj_required) PAR ROUTE)
 app.include_router(party_mj_router)
 app.include_router(session_router)
 app.include_router(timeline_router)
 app.include_router(master_epilogue_router)
+app.include_router(auth_mj_router)
 
 # Router de debug WS optionnel (en dev)
 if getattr(debug_ws, "ROUTER_ENABLED", False):

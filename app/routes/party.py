@@ -16,18 +16,26 @@ Sécurité:
 Endpoints:
 - POST /party/load_plan: enregistre la séquence des jeux (avec round optionnel).
 - POST /party/next_round: crée la session suivante et avance le curseur.
+
+# FIX (Lot A):
+- POST /party/start  : (ré)initialise la partie (phase JOIN, inscriptions ouvertes)
+- GET  /party/status : snapshot synthétique (phase, lock, joueurs, enveloppes)
 """
 from fastapi import APIRouter, Header, HTTPException
 from fastapi import Depends
-from app.deps.auth import mj_required
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional
 
+from app.deps.auth import mj_required
 from app.config.settings import settings
 from app.services.session_plan import SESSION_PLAN
 from app.services.minigame_catalog import CATALOG
 from app.services.minigame_runtime import RUNTIME
 from app.utils.team_utils import random_teams
+from app.services.game_state import GAME_STATE            # FIX
+from app.services.ws_manager import WS                    # FIX
+from app.services.envelopes import summary_for_mj         # FIX
 from uuid import uuid4
 
 router = APIRouter(prefix="/party", tags=["party"], dependencies=[Depends(mj_required)])
@@ -100,3 +108,56 @@ async def next_round(body: NextRoundPayload):
     # Avance le curseur du plan (round suivant prêt)
     SESSION_PLAN.next()
     return {"ok": True, "session": session}
+
+# ===========================
+# FIX (Lot A): socle & status
+# ===========================
+@router.post("/start")
+async def party_start():
+    """
+    (Ré)initialise la partie au stade JOIN (inscriptions ouvertes).
+    - phase_label = "JOIN"
+    - join_locked = False
+    - log + persist + WS 'phase_change'
+    """
+    try:
+        GAME_STATE.state.setdefault("phase_label", "JOIN")
+        GAME_STATE.state["phase_label"] = "JOIN"
+        GAME_STATE.state["join_locked"] = False
+        GAME_STATE.log_event("party_started", {"phase": "JOIN", "join_locked": False})
+        GAME_STATE.save()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Cannot start party: {e}")
+
+    await WS.broadcast_type("event", {"kind": "phase_change", "phase": "JOIN"})
+    return {"ok": True, "phase": "JOIN", "join_locked": False}
+
+@router.get("/status")
+def party_status():
+    """
+    Snapshot synthétique d'état :
+    - phase_label, join_locked
+    - players_count
+    - envelopes: total / assigned / left
+    (Pas de détail d'enveloppes ici)
+    """
+    phase = GAME_STATE.state.get("phase_label", "JOIN")
+    join_locked = bool(GAME_STATE.state.get("join_locked", False))
+    players_count = len(GAME_STATE.players)
+
+    env_summary = summary_for_mj(include_hints=False)
+    env_total    = env_summary.get("total", 0)
+    env_assigned = env_summary.get("assigned", 0)
+    env_left     = env_summary.get("left", 0)
+
+    return JSONResponse(content={
+        "ok": True,
+        "phase_label": phase,
+        "join_locked": join_locked,
+        "players_count": players_count,
+        "envelopes": {
+            "total": env_total,
+            "assigned": env_assigned,
+            "left": env_left
+        }
+    })

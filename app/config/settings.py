@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     # Jeton MJ (Maître du Jeu) utilisé par la dépendance `mj_required`
     # ⚠️ Remplacez en production via .env
     MJ_TOKEN: str = "changeme-super-secret"
+    DEBUG: bool = True
+    MJ_USER: str = "mj"
+    MJ_PASSWORD: str = "super-secret-mj"
 
     # Configuration du LLM (par défaut : Ollama local + modèle dolphin-mixtral)
     LLM_PROVIDER: str = "ollama"

@@ -1,69 +1,129 @@
 """
-Dépendance d'authentification MJ (Maître du Jeu)
-================================================
+Dépendances d'authentification MJ (Maître du Jeu)
+==================================================
 
-Rôle
-----
-- Fournir une *dependency* FastAPI `mj_required` pour protéger les endpoints réservés au MJ.
-- Repose sur un schéma Bearer (header `Authorization: Bearer <MJ_TOKEN>`).
+Objectif
+--------
+Fournir une *dependency* FastAPI `mj_required` qui autorise l'accès MJ via:
+1) un **Bearer token** (pratique en dev/CLI), *ou*
+2) un **cookie de session HttpOnly** (sécurisé pour l'interface MJ du front).
 
 Intégrations
 ------------
-- `settings.MJ_TOKEN` : jeton secret attendu côté serveur.
-- À utiliser dans les routes : `dependencies=[Depends(mj_required)]` ou
-  paramètre de fonction `mj_ok: bool = Depends(mj_required)`.
+- `settings.MJ_TOKEN` : token Bearer (dev).
+- `GAME_STATE` : stockage persistant des sessions MJ dans `state["__mj_sessions__"]`.
+- Cookies : `mj_session` (HttpOnly, SameSite=Lax, Secure en prod).
+
+Pourquoi accepter le préflight CORS ?
+-------------------------------------
+Le navigateur envoie une requête **OPTIONS** sans header `Authorization`. Il faut donc :
+- **laisser passer** les OPTIONS (géré par le middleware CORS),
+- et **protéger seulement** les méthodes réelles (GET/POST/...) avec `mj_required`.
+
+API exposée ici
+---------------
+- `mj_required` : dependency à utiliser sur chaque route **à protéger**.
+- `create_mj_session()` / `delete_mj_session()` : helpers utilisés par `/auth/mj/login|logout`.
 
 Comportement & codes retour
 ---------------------------
-- 401 si le header Authorization est manquant ou non-Bearer.
-- 403 si le token Bearer ne correspond pas à `MJ_TOKEN`.
-- Retourne `True` en cas de succès (inutile en soi, mais pratique pour typer/valider).
+- 401 si aucune authentification (ni cookie valide, ni Bearer).
+- 403 si Bearer fourni mais invalide.
+- True sinon.
 
 Notes
 -----
-- `HTTPBearer(auto_error=False)` évite que FastAPI intercepte l'erreur avant nous ; cela
-  nous permet d'unifier la réponse (401/403) à la main.
-- Cette dépendance active automatiquement le bouton "Authorize" dans la Swagger UI (OpenAPI).
+- On garde `HTTPBearer(auto_error=False)` pour faire remonter 401/403 propres.
+- Le cookie est vérifié **avant expiration**. Si expiré → supprimé.
 """
 
-# app/deps/auth.py
-from fastapi import Depends, HTTPException
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from app.config.settings import settings
+from __future__ import annotations
 
-# Schéma d'authentification Bearer (ne lève pas d'erreur auto)
+from fastapi import Depends, HTTPException, Request
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from typing import Optional, Dict, Any
+from uuid import uuid4
+from datetime import datetime, timedelta
+
+from app.config.settings import settings
+from app.services.game_state import GAME_STATE
+
+# ----------------------------
+# Constantes & utilitaires
+# ----------------------------
+_MJ_COOKIE_NAME = "mj_session"
+_MJ_SESS_KEY = "__mj_sessions__"
+_MJ_TTL_SECONDS = 12 * 3600  # 12 heures
+
+def _now_ts() -> int:
+    return int(datetime.utcnow().timestamp())
+
+def _sessions() -> Dict[str, Any]:
+    """Accède (ou crée) le dictionnaire des sessions MJ dans GAME_STATE."""
+    return GAME_STATE.state.setdefault(_MJ_SESS_KEY, {})
+
+def create_mj_session() -> str:
+    """
+    Crée une session MJ avec TTL, la stocke dans GAME_STATE, et renvoie le session_id.
+    Utilisé par /auth/mj/login.
+    """
+    sid = uuid4().hex
+    _sessions()[sid] = {"exp": _now_ts() + _MJ_TTL_SECONDS}
+    GAME_STATE.save()
+    return sid
+
+def delete_mj_session(sid: Optional[str]) -> None:
+    """Supprime une session MJ de GAME_STATE et persiste."""
+    if not sid:
+        return
+    store = _sessions()
+    if sid in store:
+        store.pop(sid, None)
+        GAME_STATE.save()
+
+def _cookie_valid(request: Request) -> bool:
+    """
+    Valide la session MJ par cookie HttpOnly. Retourne True si (sid présent ET non expiré).
+    En cas d'expiration, la session est supprimée.
+    """
+    sid = request.cookies.get(_MJ_COOKIE_NAME)
+    if not sid:
+        return False
+    rec = _sessions().get(sid)
+    if not isinstance(rec, dict):
+        return False
+    if int(rec.get("exp", 0)) < _now_ts():
+        delete_mj_session(sid)
+        return False
+    return True
+
+# Schéma Bearer (désactive l'erreur auto pour qu'on rende nos 401/403)
 bearer = HTTPBearer(auto_error=False)
 
-def mj_required(credentials: HTTPAuthorizationCredentials = Depends(bearer)):
+def mj_required(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer),
+):
     """
-    Exige une authentification Bearer MJ pour l'accès à une route.
+    Dépendance d'accès MJ.
 
-    Paramètres
-    ----------
-    credentials : HTTPAuthorizationCredentials
-        Injecté par FastAPI via le schéma `HTTPBearer`.
-        Contient `scheme` (ex: "Bearer") et `credentials` (le token).
+    Autorise si:
+    - Cookie de session MJ valide (HttpOnly), OU
+    - Authorization: Bearer <settings.MJ_TOKEN>
 
-    Exceptions
-    ----------
-    HTTPException 401 :
-        - Absence du header Authorization.
-        - Schéma différent de Bearer.
-    HTTPException 403 :
-        - Token incorrect par rapport à `settings.MJ_TOKEN`.
-
-    Retour
-    ------
-    bool
-        True si l'authentification est valide (aucune autre utilisation requise).
+    Exceptions:
+    - 401 si aucune authentification n'est fournie/valide,
+    - 403 si un Bearer est fourni mais ne correspond pas à `MJ_TOKEN`.
     """
-    # Vérifie la présence d'un header Authorization de type Bearer
-    if not credentials or (credentials.scheme or "").lower() != "bearer":
-        raise HTTPException(status_code=401, detail="Missing bearer token")
+    # 1) Cookie HttpOnly (recommandé pour l'interface MJ)
+    if _cookie_valid(request):
+        return True
 
-    # Compare la valeur du token avec celle configurée côté serveur
-    if credentials.credentials != settings.MJ_TOKEN:
+    # 2) Bearer (dev/CLI)
+    if credentials and (credentials.scheme or "").lower() == "bearer":
+        if credentials.credentials == settings.MJ_TOKEN:
+            return True
         raise HTTPException(status_code=403, detail="Invalid token")
 
-    # Laisse la route continuer ; la valeur n'est pas utilisée par la suite
-    return True
+    # Rien de valide → refus
+    raise HTTPException(status_code=401, detail="MJ authentication required")
