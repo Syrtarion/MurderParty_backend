@@ -43,6 +43,7 @@ from app.routes.master_epilogue import router as master_epilogue_router
 from app.routes import debug_ws
 from app.routes import auth as auth_router
 from app.routes.auth_mj import router as auth_mj_router
+from app.routes.debug_ws import router as debug_ws_router
 
 from app.config.settings import settings
 
@@ -92,6 +93,7 @@ app.include_router(session_router)
 app.include_router(timeline_router)
 app.include_router(master_epilogue_router)
 app.include_router(auth_mj_router)
+app.include_router(debug_ws_router)
 
 # Router de debug WS optionnel (en dev)
 if getattr(debug_ws, "ROUTER_ENABLED", False):

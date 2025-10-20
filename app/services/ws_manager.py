@@ -1,20 +1,11 @@
+# app/services/ws_manager.py
 """
 Service: ws_manager.py
-Rôle:
-- Gérer l’ensemble des connexions WebSocket (mapping player_id → sockets).
-- Offrir des helpers d’envoi ciblé/broadcast + wrappers thread-safe utilisables
-  depuis du code synchrone (routes FastAPI sync).
-
-Conception:
-- Stocke *plusieurs* sockets par player_id (multi-onglets / multi-devices).
-- Maintient un pool de sockets "pending" tant que le client n'a pas envoyé "identify".
-- Snapshots (copies immuables) pour éviter l’erreur "set changed size during iteration".
-
-API principale:
-- WS.connect(ws) / WS.disconnect(ws) / WS.identify(ws, player_id)
-- WS.send_to_player(player_id, payload) / WS.broadcast(payload) / WS.broadcast_all(payload)
-- Helpers typés: send_type_to_player, broadcast_type, ...
-- Wrappers sync: ws_send_to_player_safe, ws_broadcast_safe, etc.
+- Mapping player_id -> sockets ET socket -> player_id (ws_to_player).
+- Identification idempotente (déplacement de socket si player change).
+- Snapshots immuables pour éviter "set changed size during iteration".
+- Helpers sync pour envois typés & bruts.
+- Admin: stats(), kick_player(), close_all().
 """
 from __future__ import annotations
 from typing import Dict, Set, Any
@@ -25,48 +16,63 @@ import anyio
 import asyncio
 from starlette.websockets import WebSocket
 
-# =====================================================
-# GESTIONNAIRE WEBSOCKET PRINCIPAL
-# =====================================================
-
 @dataclass
 class WSManager:
     _lock: RLock = field(default_factory=RLock, init=False, repr=False)
-    # player_id -> set of WebSocket
+    # player_id -> set(WebSocket)
     clients_by_player: Dict[str, Set[WebSocket]] = field(default_factory=dict)
     # anonymous sockets waiting for identify
     pending: Set[WebSocket] = field(default_factory=set)
+    # reverse map: socket -> player_id
+    ws_to_player: Dict[WebSocket, str] = field(default_factory=dict)
 
     async def connect(self, ws: WebSocket) -> None:
-        """Accepte la connexion WS et la place dans 'pending' jusqu'à identification."""
+        """Accepte la connexion WS et place dans 'pending'."""
         await ws.accept()
         with self._lock:
             self.pending.add(ws)
 
-    def _safe_remove(self, ws: WebSocket) -> None:
-        """Retire la socket de tous les ensembles (pending ou identifiés)."""
+    def _unlink_ws_from_current_player(self, ws: WebSocket) -> None:
+        """Retire 'ws' des structures où il se trouve (pending et/ou player)."""
         with self._lock:
             self.pending.discard(ws)
-            for pid, conns in list(self.clients_by_player.items()):
-                if ws in conns:
-                    conns.discard(ws)
-                    if not conns:
-                        del self.clients_by_player[pid]
+            prev_pid = self.ws_to_player.pop(ws, None)
+            if prev_pid:
+                bucket = self.clients_by_player.get(prev_pid)
+                if bucket and ws in bucket:
+                    bucket.discard(ws)
+                    if not bucket:
+                        self.clients_by_player.pop(prev_pid, None)
 
     async def disconnect(self, ws: WebSocket) -> None:
         """Ferme proprement la connexion et nettoie les registres."""
-        self._safe_remove(ws)
+        self._unlink_ws_from_current_player(ws)
         try:
             await ws.close()
         except Exception:
             pass
 
     def identify(self, ws: WebSocket, player_id: str) -> None:
-        """Associe un WebSocket à un player_id et le retire des 'pending'."""
+        """
+        Associe un WebSocket à un player_id.
+        - S'il était déjà associé à un autre player, on le déplace proprement.
+        - Retire de 'pending'.
+        """
         with self._lock:
+            # enlever des emplacements actuels
             self.pending.discard(ws)
+            prev_pid = self.ws_to_player.get(ws)
+            if prev_pid and prev_pid != player_id:
+                bucket_prev = self.clients_by_player.get(prev_pid)
+                if bucket_prev and ws in bucket_prev:
+                    bucket_prev.discard(ws)
+                    if not bucket_prev:
+                        self.clients_by_player.pop(prev_pid, None)
+
+            # associer au nouveau player
             bucket = self.clients_by_player.setdefault(player_id, set())
             bucket.add(ws)
+            self.ws_to_player[ws] = player_id
 
     async def _send_json_one(self, ws: WebSocket, payload: Any) -> bool:
         """Envoie à un WS; renvoie True si succès, sinon False (et retire le WS mort)."""
@@ -75,16 +81,13 @@ class WSManager:
             await ws.send_text(data)
             return True
         except Exception:
-            # socket mort/fermée → on la retire silencieusement
-            self._safe_remove(ws)
+            self._unlink_ws_from_current_player(ws)
             return False
 
     async def send_json(self, ws: WebSocket, payload: Any) -> bool:
-        """Envoi simple d’un JSON à un seul WS."""
         return await self._send_json_one(ws, payload)
 
-    # ---------- SNAPSHOTS (listes immuables pour éviter "set changed size") ----------
-
+    # ---------- snapshots immuables ----------
     def _snapshot_player(self, player_id: str) -> list[WebSocket]:
         with self._lock:
             return list(self.clients_by_player.get(player_id, set()))
@@ -104,48 +107,65 @@ class WSManager:
             result.extend(list(self.pending))
             return result
 
-    # ---------- ENVOIS ----------
-
+    # ---------- envois ----------
     async def send_to_player(self, player_id: str, payload: Any) -> int:
-        """Envoie un message à tous les sockets associés à un joueur (succès réels)."""
         conns = self._snapshot_player(player_id)
         success = 0
-        for ws in conns:  # itère sur le snapshot
+        for ws in conns:
             if await self._send_json_one(ws, payload):
                 success += 1
+        print(f"[WS] send_to_player pid={player_id} success={success}/{len(conns)}")
         return success
 
     async def broadcast(self, payload: Any) -> int:
-        """Diffuse à tous les sockets identifiés (par défaut)."""
         conns = self._snapshot_all_identified()
         success = 0
-        for ws in conns:  # itère sur le snapshot
+        for ws in conns:
             if await self._send_json_one(ws, payload):
                 success += 1
         return success
 
     async def broadcast_all(self, payload: Any) -> int:
-        """Diffuse à tous les sockets, y compris 'pending' (rarement nécessaire)."""
         conns = self._snapshot_all()
         success = 0
-        for ws in conns:  # itère sur le snapshot
+        for ws in conns:
             if await self._send_json_one(ws, payload):
                 success += 1
         return success
 
-    # ---------- Helpers "typés" (type + payload) ----------
-
+    # ---------- helpers typés ----------
     async def send_type_to_player(self, player_id: str, event_type: str, payload: Any) -> int:
-        """Ajoute un champ 'type' au payload et envoie au joueur."""
         return await self.send_to_player(player_id, {"type": event_type, "payload": payload})
 
     async def broadcast_type(self, event_type: str, payload: Any) -> int:
-        """Ajoute 'type' et diffuse à tout le monde identifié."""
         return await self.broadcast({"type": event_type, "payload": payload})
 
     async def broadcast_all_type(self, event_type: str, payload: Any) -> int:
-        """Ajoute 'type' et diffuse à tout le monde (y compris pending)."""
         return await self.broadcast_all({"type": event_type, "payload": payload})
+
+    # ---------- admin ----------
+    def stats(self) -> dict:
+        with self._lock:
+            identified = {pid: len(conns) for pid, conns in self.clients_by_player.items()}
+            return {
+                "identified": identified,
+                "identified_total": sum(identified.values()),
+                "pending_total": len(self.pending),
+            }
+
+    async def kick_player(self, player_id: str) -> int:
+        """Ferme toutes les sockets d’un joueur et nettoie les mappings."""
+        conns = self._snapshot_player(player_id)
+        for ws in conns:
+            await self.disconnect(ws)
+        return len(conns)
+
+    async def close_all(self) -> dict:
+        """Ferme TOUTES les sockets (identified + pending)."""
+        conns = self._snapshot_all()
+        for ws in conns:
+            await self.disconnect(ws)
+        return self.stats()
 
 
 WS = WSManager()
@@ -207,3 +227,15 @@ def ws_broadcast_type_safe(event_type: str, payload: dict):
 def ws_broadcast_all_type_safe(event_type: str, payload: dict):
     """Wrapper synchrone: broadcast typé à tous (y compris pending)."""
     _run_async(WS.broadcast_all_type(event_type, payload))
+
+# --- (Alias pratique) ---
+def ws_send_envelopes_update(player_id: str, envelopes: list[dict]):
+    """
+    Alias pratique : envoie un event 'event' avec kind='envelopes_update' ciblé joueur.
+    Utilisé par master.py après distribution / réassignation.
+    """
+    ws_send_type_to_player_safe(player_id, "event", {
+        "kind": "envelopes_update",
+        "player_id": player_id,
+        "envelopes": envelopes,
+    })

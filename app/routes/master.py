@@ -27,14 +27,16 @@ from app.config.settings import settings
 from app.services.narrative_core import NARRATIVE
 from app.services.game_state import GAME_STATE
 from app.services.llm_engine import generate_indice
-from app.services.ws_manager import WS
+from app.services.ws_manager import WS, ws_send_type_to_player_safe
 from app.services.narrative_dynamic import generate_dynamic_event
 
-# Enveloppes : la distribution lit d’abord le GAME_STATE, sinon le story_seed sur disque
+# Enveloppes
 from app.services.envelopes import (
     distribute_envelopes_equitable,
     summary_for_mj,
     reset_envelope_assignments,
+    player_envelopes,         # helper joueur
+    assign_envelope_to_player # bonus
 )
 
 router = APIRouter(prefix="/master", tags=["master"], dependencies=[Depends(mj_required)])
@@ -176,7 +178,9 @@ async def lock_join():
     - Met à jour la phase -> ENVELOPES_DISTRIBUTION (les enveloppes doivent être cachées ensuite).
     - Distribution: lit d’abord le GAME_STATE; si aucune enveloppe, lit le story_seed.json (disque).
     - Log + persist.
-    - Diffuse en WS : 'join_locked', 'phase_change', 'envelopes_update'.
+    - Diffuse en WS :
+        • events globaux: 'join_locked', 'phase_change', 'envelopes_update'
+        • + ciblé: 'envelopes_update' avec la liste {num,id} pour CHAQUE joueur.
     """
     try:
         # 1) verrou + phase
@@ -194,10 +198,23 @@ async def lock_join():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Cannot lock/distribute: {e}")
 
-    # 4) broadcast temps réel
+    # 4) broadcast temps réel (global)
     await WS.broadcast_type("event", {"kind": "join_locked"})
     await WS.broadcast_type("event", {"kind": "phase_change", "phase": "ENVELOPES_DISTRIBUTION"})
     await WS.broadcast_type("event", {"kind": "envelopes_update"})
+
+    # 5) ciblé par joueur : liste complète des enveloppes (num,id) -> MAJ instantanée côté front joueur
+    try:
+        for pid in list(GAME_STATE.players.keys()):
+            envs = player_envelopes(pid)
+            ws_send_type_to_player_safe(pid, "event", {
+                "kind": "envelopes_update",
+                "player_id": pid,
+                "envelopes": envs,
+            })
+    except Exception as e:
+        # Ne bloque pas la réponse HTTP — log
+        print(f"[WS] envelopes_update ciblé: {e}")
 
     return {
         "ok": True,
@@ -225,9 +242,6 @@ async def unlock_join():
 
 # --------------------------------------------------
 # Diagnostics & maintenance enveloppes / seed
-#   - summary: préfère l’état en mémoire, sinon retombe sur le seed disque
-#   - reset: enlève toutes les assignations en mémoire
-#   - reload: recharge le seed DISQUE -> mémoire (chemin par défaut ou fourni)
 # --------------------------------------------------
 @router.get("/envelopes/summary")
 async def envelopes_summary(include_hints: bool = False):
@@ -283,3 +297,49 @@ async def seed_reload(path: Optional[str] = None):
 
     await WS.broadcast_type("event", {"kind": "seed_reloaded"})
     return {"ok": True, "path": seed_path, "envelopes_count": len(seed.get("envelopes", []))}
+
+# --------------------------------------------------
+# BONUS — Réassigner une enveloppe à un joueur (live)
+# --------------------------------------------------
+class AssignEnvelopePayload(BaseModel):
+    envelope_id: str | int
+    player_id: str
+
+@router.post("/envelopes/assign")
+async def envelopes_assign(p: AssignEnvelopePayload):
+    """
+    BONUS MJ:
+    (Ré)assigne une enveloppe à un joueur.
+    - Met à jour le seed en mémoire
+    - Resynchronise la vue joueur
+    - Notifie EN LIVE:
+        • nouveau propriétaire => event 'envelopes_update' avec sa liste
+        • ancien propriétaire (si existait) => event 'envelopes_update' avec SA nouvelle liste
+    """
+    res = assign_envelope_to_player(p.envelope_id, p.player_id)
+    if not res.get("ok"):
+        raise HTTPException(404, detail="envelope_not_found")
+
+    # notifications ciblées
+    try:
+        # nouveau propriétaire
+        new_envs = player_envelopes(p.player_id)
+        ws_send_type_to_player_safe(p.player_id, "event", {
+            "kind": "envelopes_update",
+            "player_id": p.player_id,
+            "envelopes": new_envs,
+        })
+
+        # ancien propriétaire (si différent et existait)
+        prev_owner = res.get("previous_owner")
+        if prev_owner and prev_owner != p.player_id:
+            prev_envs = player_envelopes(prev_owner)
+            ws_send_type_to_player_safe(prev_owner, "event", {
+                "kind": "envelopes_update",
+                "player_id": prev_owner,
+                "envelopes": prev_envs,
+            })
+    except Exception as e:
+        print(f"[WS] envelopes_assign notify error: {e}")
+
+    return res

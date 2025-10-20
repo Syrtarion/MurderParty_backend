@@ -253,3 +253,65 @@ def distribute_envelopes_equitable() -> Dict[str, Any]:
 
     left = len([e for e in envs if not e.get("assigned_player_id")])
     return {"assigned": assigned_now, "left": left, "per_player": _count_per_player(envs)}
+
+# ------------------- HELPERS POUR WS / BONUS --------------------------
+def player_envelopes(player_id: str) -> List[Dict[str, Any]]:
+    """
+    Retourne la liste des enveloppes attribuées au joueur sous la forme
+    [{"num": <position 1..N>, "id": <env_id>}].
+
+    La numérotation 'num' utilise l’ordre trié par id numérique si possible.
+    """
+    # On utilise la vue déjà synchronisée dans GAME_STATE.players si dispo
+    player = GAME_STATE.players.get(player_id)
+    if player and isinstance(player.get("envelopes"), list):
+        # garantir (num, id) format
+        out = []
+        for e in player["envelopes"]:
+            out.append({"num": int(e.get("num")), "id": _normalize_id(e.get("id"))})
+        return out
+
+    # fallback: reconstruire depuis seed mémoire/disque
+    envs = _envs_from_seed()
+    owned = [e for e in envs if e.get("assigned_player_id") == player_id]
+    def _env_sort_key(s: str):
+        m = re.search(r'(\d+)$', s)
+        return (0, int(m.group(1))) if m else (1, s)
+    owned_ids = sorted([_normalize_id(e.get("id")) for e in owned], key=_env_sort_key)
+    return [{"num": i + 1, "id": eid} for i, eid in enumerate(owned_ids)]
+
+def assign_envelope_to_player(envelope_id: str | int, player_id: str) -> Dict[str, Any]:
+    """
+    BONUS: (ré)assigne une enveloppe à un joueur (en mémoire uniquement),
+    resynchronise la vue joueur, persiste, et retourne (prev_owner, new_owner).
+    """
+    eid = _normalize_id(envelope_id)
+
+    # S’assurer d’avoir un seed en mémoire (sinon charger depuis disque)
+    seed = GAME_STATE.state.get("story_seed")
+    if not isinstance(seed, dict) or not seed:
+        seed = _load_seed_from_disk()
+        GAME_STATE.state["story_seed"] = seed
+
+    envs = seed.get("envelopes") or []
+    prev_owner = None
+    found = None
+    for e in envs:
+        if _normalize_id(e.get("id")) == eid:
+            prev_owner = e.get("assigned_player_id")
+            e["assigned_player_id"] = player_id
+            found = e
+            break
+    if not found:
+        return {"ok": False, "reason": "envelope_not_found"}
+
+    # Vue joueur + persist
+    _sync_players_envelopes_from_seed()
+    GAME_STATE.save()
+
+    return {
+        "ok": True,
+        "envelope_id": eid,
+        "previous_owner": prev_owner,
+        "new_owner": player_id,
+    }

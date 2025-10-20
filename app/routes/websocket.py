@@ -1,12 +1,15 @@
+# app/routes/websocket.py
 """
 Module routes/websocket.py
 Rôle:
 - Point d'entrée WebSocket unique (ws://.../ws) pour la communication temps réel.
 - Gère l'identification du client (player_id) et un protocole minimal (ping/pong).
 
-Protocole client attendu:
+Protocole client accepté (tolérant) :
 1) Connexion → le client ouvre ws://<host>/ws
-2) Identification → envoi JSON {"type":"identify","player_id":"<id>"}
+2) Identification (2 formats supportés) :
+   a) {"type":"identify","player_id":"<id>"}
+   b) {"type":"identify","payload":{"player_id":"<id>"}}
    - Sans identify valide, la connexion reste "pending" côté WS manager.
 3) Réception push serveur (exemples):
    - {"type":"secret_mission","mission":{...}}
@@ -28,7 +31,6 @@ import json
 from typing import Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from fastapi import Depends
 from starlette.websockets import WebSocketState
 
 from app.services.ws_manager import WS
@@ -39,7 +41,7 @@ router = APIRouter()
 async def websocket_endpoint(ws: WebSocket):
     """
     Boucle de réception/traitement des messages WS côté serveur.
-    - Identifie la socket quand le client envoie {"type":"identify","player_id":"..."}.
+    - Identifie la socket quand le client envoie {"type":"identify", ...}.
     - Répond aux pings avec {"type":"pong"}.
     - Accuse réception pour les autres types avec {"type":"ack", "received": ...}.
     """
@@ -55,13 +57,16 @@ async def websocket_endpoint(ws: WebSocket):
 
             mtype: str = msg.get("type")
             if mtype == "identify":
-                # Identification du client: associe ws ↔ player_id
-                pid: Optional[str] = (msg.get("player_id") or "").strip()
+                # Deux formats acceptés :
+                #  - top-level: {"type":"identify","player_id":"..."}
+                #  - payload  : {"type":"identify","payload":{"player_id":"..."}}
+                payload = msg.get("payload") or {}
+                pid: Optional[str] = (msg.get("player_id") or payload.get("player_id") or "").strip()
                 if pid:
                     WS.identify(ws, pid)
+                    # Ack d'identification : cohérent avec l'existant
                     await WS.send_json(ws, {"type": "identified", "player_id": pid})
                 else:
-                    # Rappeler au client qu'il manque 'player_id'
                     await WS.send_json(ws, {"type": "error", "error": "missing player_id"})
 
             elif mtype == "ping":
@@ -75,6 +80,9 @@ async def websocket_endpoint(ws: WebSocket):
         # Déconnexion "propre" déclenchée côté client
         pass
     finally:
-        # On nettoie si la socket n'est pas déjà marquée déconnectée
+        # Nettoyage
         if ws.client_state != WebSocketState.DISCONNECTED:
+            await WS.disconnect(ws)
+        else:
+            # Si déjà fermé côté client, on nettoie quand même nos registres
             await WS.disconnect(ws)
