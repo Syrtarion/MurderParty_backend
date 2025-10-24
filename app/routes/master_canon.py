@@ -13,8 +13,13 @@ Intégrations:
 Robustesse JSON:
 - Extraction tolerant aux débordements de texte (cherche { ... }).
 - 400 si aucun joueur inscrit (impossible de désigner un coupable).
+
+MISE À JOUR:
+- Recopie aussi le canon dans GAME_STATE.state["canon"] pour un accès direct par /party/roles_assign.
 """
 # app/routes/master_canon.py
+from __future__ import annotations
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 import json
@@ -59,7 +64,7 @@ async def generate_canon(p: CanonRequest):
     Génère automatiquement un canon narratif :
     - Arme, lieu et mobile par LLM
     - Coupable tiré au hasard parmi les joueurs
-    - Verrouille `locked=True` et persiste dans `NARRATIVE`.
+    - Verrouille `locked=True` et persiste dans `NARRATIVE` (+ miroir dans GAME_STATE.state["canon"])
     """
     seed = load_seed()
 
@@ -107,9 +112,13 @@ async def generate_canon(p: CanonRequest):
         canon["culprit_name"] = culprit_name
         canon["locked"] = True
 
-        # Sauvegarde
+        # Sauvegarde principale
         NARRATIVE.canon = canon
         NARRATIVE.save()
+
+        # Miroir dans GAME_STATE.state["canon"] pour un accès direct par /party/roles_assign
+        GAME_STATE.state["canon"] = canon
+        GAME_STATE.save()
 
         # Logs/timeline
         register_event("canon_generated", {
