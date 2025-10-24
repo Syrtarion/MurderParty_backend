@@ -1,12 +1,27 @@
 name: CI Backend
 on: [push, pull_request]
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install -r requirements.txt
-      - run: pytest -q
+          cache: "pip"
+
+      - name: Install runtime deps
+        run: pip install -r requirements.txt
+
+      - name: Install dev/test deps
+        run: |
+          if [ -f requirements-dev.txt ]; then
+            pip install -r requirements-dev.txt
+          else
+            pip install pytest
+          fi
+
+      - name: Run tests
+        run: pytest -q
