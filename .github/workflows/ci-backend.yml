@@ -25,4 +25,3 @@ jobs:
           else
             echo "No pytest test files in ./tests - skipping"
           fi
-
