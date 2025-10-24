@@ -20,9 +20,9 @@ jobs:
           fi
       - name: Run tests (skip if none)
         run: |
-          if [ -d tests ] && [ "$(ls -A tests)" ]; then
+          if find tests -type f \( -name "test_*.py" -o -name "*_test.py" \) | grep -q .; then
             pytest -q tests
           else
-            echo "No tests found in ./tests - skipping"
+            echo "No pytest test files in ./tests - skipping"
           fi
 
