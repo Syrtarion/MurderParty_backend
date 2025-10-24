@@ -1,25 +1,174 @@
 """
 Service: llm_engine.py
-Rôle:
-- Centraliser les appels LLM (Ollama par défaut) pour la génération
-  d'indices et de textes (JSON ou phrases courtes).
-- Appliquer une post-édition et un anti-spoiler basés sur le canon.
+- Centralise les appels vers le LLM (Ollama par défaut) pour produire indices et textes courts.
+- Applique un post-traitement et un filtre anti-spoiler basé sur le canon.
 
-Fonctions:
-- generate_indice(prompt, kind): chat LLM (Ollama /api/chat) → 1–2 phrases FR.
-- run_llm(prompt): génération brute (Ollama /api/generate) → flux concaténé.
-
-Sécurité narrative:
-- `get_canon_summary()` + `get_sensitive_terms()` injectés en system.
-- `_has_spoiler()` détecte les confessions ou mentions du canon (regex + banlist).
+Fonctions principales:
+- generate_indice(prompt, kind): appels chat (Ollama /api/chat) avec contrôle spoiler.
+- run_llm(prompt): génération brute (Ollama /api/generate) pour les textes JSON.
 """
-import requests, re
 import json
-from typing import Dict, Any, List
+import logging
+import re
+from typing import Any, Dict, List, Optional, Tuple
+from uuid import uuid4
+
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
 from app.config.settings import settings
 from app.services.narrative_core import get_canon_summary, get_sensitive_terms, CONFESSION_PATTERNS
 
-SESSION = requests.Session()
+logger = logging.getLogger(__name__)
+
+DEFAULT_CHAT_TIMEOUT: Tuple[float, float] = (5.0, 45.0)  # connect, read
+DEFAULT_GENERATE_TIMEOUT: Tuple[float, float] = (5.0, 60.0)  # connect, read
+
+
+class LLMServiceError(RuntimeError):
+    """Erreur encapsulant un échec de communication avec le LLM."""
+
+
+class LLMClient:
+    """
+    Client HTTP centralisé pour communiquer avec le LLM.
+    - Configure retries avec backoff exponentiel.
+    - Journalise chaque requête avec un identifiant de corrélation.
+    """
+
+    def __init__(
+        self,
+        chat_endpoint: str,
+        *,
+        session: Optional[requests.Session] = None,
+        chat_timeout: Tuple[float, float] = DEFAULT_CHAT_TIMEOUT,
+        generate_timeout: Tuple[float, float] = DEFAULT_GENERATE_TIMEOUT,
+    ) -> None:
+        self.chat_endpoint = chat_endpoint
+        self.generate_endpoint = self._resolve_generate_endpoint(chat_endpoint)
+        self.session = session or self._build_session()
+        self.chat_timeout = chat_timeout
+        self.generate_timeout = generate_timeout
+
+    @staticmethod
+    def _build_session() -> requests.Session:
+        session = requests.Session()
+        retry = Retry(
+            total=3,
+            backoff_factor=0.5,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=frozenset({"POST"}),
+            respect_retry_after_header=True,
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        return session
+
+    @staticmethod
+    def _resolve_generate_endpoint(chat_endpoint: str) -> str:
+        if chat_endpoint.endswith("/api/chat"):
+            return chat_endpoint[:-9] + "generate"
+        if chat_endpoint.endswith("/api/chat/"):
+            return chat_endpoint[:-10] + "generate"
+        return chat_endpoint.replace("/api/chat", "/api/generate")
+
+    def _post(
+        self,
+        url: str,
+        payload: Dict[str, Any],
+        *,
+        timeout: Tuple[float, float],
+        request_id: str,
+        stream: bool = False,
+    ) -> requests.Response:
+        try:
+            logger.debug(
+                "LLM request start",
+                extra={"llm_url": url, "llm_request_id": request_id},
+            )
+            response = self.session.post(url, json=payload, timeout=timeout, stream=stream)
+            response.raise_for_status()
+            return response
+        except requests.Timeout as exc:
+            logger.warning(
+                "LLM request timeout",
+                extra={"llm_url": url, "llm_request_id": request_id},
+            )
+            raise LLMServiceError("LLM request timed out") from exc
+        except requests.RequestException as exc:
+            logger.error(
+                "LLM request failed",
+                exc_info=True,
+                extra={"llm_url": url, "llm_request_id": request_id},
+            )
+            raise LLMServiceError("LLM request failed") from exc
+
+    def chat(self, payload: Dict[str, Any], *, request_id: str) -> Dict[str, Any]:
+        response = self._post(
+            self.chat_endpoint,
+            payload,
+            timeout=self.chat_timeout,
+            request_id=request_id,
+        )
+        try:
+            data = response.json()
+            logger.debug(
+                "LLM chat success",
+                extra={"llm_request_id": request_id},
+            )
+            return data
+        except json.JSONDecodeError as exc:
+            logger.error(
+                "Invalid JSON payload from LLM chat",
+                exc_info=True,
+                extra={"llm_request_id": request_id},
+            )
+            raise LLMServiceError("Invalid JSON payload from LLM chat") from exc
+
+    def generate(self, payload: Dict[str, Any], *, request_id: str) -> str:
+        response = self._post(
+            self.generate_endpoint,
+            payload,
+            timeout=self.generate_timeout,
+            request_id=request_id,
+            stream=True,
+        )
+
+        content_parts: List[str] = []
+        try:
+            for raw_line in response.iter_lines(decode_unicode=True):
+                if not raw_line:
+                    continue
+                try:
+                    line = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    logger.warning(
+                        "Skipping invalid JSON line from LLM generate",
+                        extra={"llm_request_id": request_id, "llm_line": raw_line},
+                    )
+                    continue
+                content_parts.append(line.get("response", ""))
+        finally:
+            response.close()
+
+        if not content_parts:
+            logger.error(
+                "Empty response payload from LLM generate",
+                extra={"llm_request_id": request_id},
+            )
+            raise LLMServiceError("Empty response from LLM generate")
+
+        text = "".join(content_parts).strip()
+        logger.debug(
+            "LLM generate success",
+            extra={"llm_request_id": request_id},
+        )
+        return text
+
+
+CLIENT = LLMClient(settings.LLM_ENDPOINT)
 
 SYSTEM_PROMPT = (
     "You are the narrative engine of a live murder mystery role-playing game. "
@@ -68,8 +217,6 @@ def generate_indice(prompt: str, kind: str = "ambiguous", temperature: float = 0
     - `kind` influe la température (crucial/ambiguous/red_herrings/decor).
     - Plusieurs tentatives si spoiler détecté.
     """
-    endpoint = settings.LLM_ENDPOINT.replace("/api/generate", "/api/chat")
-
     canon = get_canon_summary()
     sensitive_terms = get_sensitive_terms()
 
@@ -90,7 +237,8 @@ def generate_indice(prompt: str, kind: str = "ambiguous", temperature: float = 0
         )},
     ]
 
-    attempt, last_err = 0, None
+    attempt = 0
+    last_err: Optional[str] = None
     while attempt <= max_attempts:
         try:
             messages = list(base_messages) + [{"role": "user", "content": prompt}]
@@ -99,9 +247,9 @@ def generate_indice(prompt: str, kind: str = "ambiguous", temperature: float = 0
                 banlist = ", ".join(sensitive_terms[:5])
                 messages.append({"role": "system", "content": f"Do NOT mention or allude to: {banlist}. Rephrase to avoid spoilers."})
 
-            resp = SESSION.post(
-                endpoint,
-                json={
+            request_id = f"chat-{uuid4().hex}"
+            data = CLIENT.chat(
+                {
                     "model": settings.LLM_MODEL,
                     "messages": messages,
                     "options": {
@@ -113,24 +261,43 @@ def generate_indice(prompt: str, kind: str = "ambiguous", temperature: float = 0
                     "stream": False,
                     "keep_alive": "2m",
                 },
-                timeout=45,
+                request_id=request_id,
             )
-            resp.raise_for_status()
-            data = resp.json()
             # Ollama /api/chat peut renvoyer {"message":{"content":...}} ou {"response":...}
             text = (data.get("message") or {}).get("content") or data.get("response") or ""
             text = _postprocess(text)
 
             if _has_spoiler(text, sensitive_terms):
+                logger.info(
+                    "LLM spoiler detected, retrying",
+                    extra={"llm_request_id": request_id, "attempt": attempt + 1, "kind": kind},
+                )
                 attempt += 1
                 continue
 
+            logger.info(
+                "LLM clue generated",
+                extra={"llm_request_id": request_id, "attempt": attempt + 1, "kind": kind},
+            )
             return {"text": text, "kind": kind, "attempts": attempt + 1}
-        except Exception as e:
-            last_err = str(e)
+        except LLMServiceError as exc:
+            last_err = str(exc)
+            logger.warning(
+                "LLM chat attempt failed",
+                exc_info=True,
+                extra={"attempt": attempt + 1, "kind": kind},
+            )
+            attempt += 1
+        except Exception as exc:
+            last_err = str(exc)
+            logger.exception("Unexpected error while generating clue", extra={"attempt": attempt + 1, "kind": kind})
             attempt += 1
 
     # Fallback minimal en cas d'échecs répétés
+    logger.error(
+        "LLM clue generation failed after retries",
+        extra={"kind": kind, "attempts": attempt, "last_error": last_err},
+    )
     return {"text": f"[stub] {kind} clue based on: {prompt[:120]}...", "kind": kind, "error": last_err or "antispam"}
 
 def run_llm(prompt: str) -> dict:
@@ -140,21 +307,30 @@ def run_llm(prompt: str) -> dict:
     - Fallback stub si provider inconnu.
     """
     if settings.LLM_PROVIDER == "ollama":
-        url = "http://localhost:11434/api/generate"
-        payload = {"model": settings.LLM_MODEL, "prompt": prompt}
-        resp = requests.post(url, json=payload, timeout=60)
-        resp.raise_for_status()
-        text = resp.text
-
-        # Ollama stream → concaténation de chaque ligne JSON {"response": "..."}
-        out = ""
-        for line in text.splitlines():
-            try:
-                data = json.loads(line)
-                out += data.get("response", "")
-            except Exception:
-                continue
-        return {"text": out.strip()}
+        request_id = f"generate-{uuid4().hex}"
+        try:
+            text = CLIENT.generate(
+                {
+                    "model": settings.LLM_MODEL,
+                    "prompt": prompt,
+                },
+                request_id=request_id,
+            )
+            logger.info(
+                "LLM generate completed",
+                extra={"llm_request_id": request_id},
+            )
+            return {"text": text}
+        except LLMServiceError as exc:
+            logger.error(
+                "LLM generate failed",
+                exc_info=True,
+                extra={"llm_request_id": request_id},
+            )
+            return {
+                "text": f"[stub] réponse générée à partir du prompt: {prompt[:50]}...",
+                "error": str(exc),
+            }
 
     # fallback : stub
     return {"text": f"[stub] réponse à partir du prompt: {prompt[:50]}..."}
