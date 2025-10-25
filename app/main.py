@@ -57,8 +57,8 @@ app = FastAPI(title="Murderparty Backend")
 ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
-    # "http://192.168.1.xx:3000",  # front sur une autre machine du LAN
 ]
+ALLOWED_ORIGIN_REGEX = r"http://(?:localhost|127\.0\.0\.1|\d{1,3}(?:\.\d{1,3}){3}):3000"
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,   # ← whitelist des frontends autorisés
