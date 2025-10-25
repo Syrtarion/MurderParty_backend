@@ -68,11 +68,15 @@ class LLMClient:
 
     @staticmethod
     def _resolve_generate_endpoint(chat_endpoint: str) -> str:
-        if chat_endpoint.endswith("/api/chat"):
-            return chat_endpoint[:-9] + "generate"
-        if chat_endpoint.endswith("/api/chat/"):
-            return chat_endpoint[:-10] + "generate"
-        return chat_endpoint.replace("/api/chat", "/api/generate")
+        normalized = chat_endpoint.rstrip("/")
+        suffix = "/api/chat"
+        if normalized.endswith(suffix):
+            base = normalized[: -len(suffix)]
+            return f"{base}/api/generate"
+        if normalized.endswith("/chat"):
+            base = normalized[: -len("/chat")]
+            return f"{base}/generate"
+        return normalized.replace("/api/chat", "/api/generate", 1)
 
     def _post(
         self,
@@ -293,12 +297,11 @@ def generate_indice(prompt: str, kind: str = "ambiguous", temperature: float = 0
             logger.exception("Unexpected error while generating clue", extra={"attempt": attempt + 1, "kind": kind})
             attempt += 1
 
-    # Fallback minimal en cas d'échecs répétés
     logger.error(
         "LLM clue generation failed after retries",
         extra={"kind": kind, "attempts": attempt, "last_error": last_err},
     )
-    return {"text": f"[stub] {kind} clue based on: {prompt[:120]}...", "kind": kind, "error": last_err or "antispam"}
+    raise LLMServiceError(last_err or "LLM clue generation failed")
 
 def run_llm(prompt: str) -> dict:
     """
@@ -308,29 +311,17 @@ def run_llm(prompt: str) -> dict:
     """
     if settings.LLM_PROVIDER == "ollama":
         request_id = f"generate-{uuid4().hex}"
-        try:
-            text = CLIENT.generate(
-                {
-                    "model": settings.LLM_MODEL,
-                    "prompt": prompt,
-                },
-                request_id=request_id,
-            )
-            logger.info(
-                "LLM generate completed",
-                extra={"llm_request_id": request_id},
-            )
-            return {"text": text}
-        except LLMServiceError as exc:
-            logger.error(
-                "LLM generate failed",
-                exc_info=True,
-                extra={"llm_request_id": request_id},
-            )
-            return {
-                "text": f"[stub] réponse générée à partir du prompt: {prompt[:50]}...",
-                "error": str(exc),
-            }
+        text = CLIENT.generate(
+            {
+                "model": settings.LLM_MODEL,
+                "prompt": prompt,
+            },
+            request_id=request_id,
+        )
+        logger.info(
+            "LLM generate completed",
+            extra={"llm_request_id": request_id},
+        )
+        return {"text": text}
 
-    # fallback : stub
-    return {"text": f"[stub] réponse à partir du prompt: {prompt[:50]}..."}
+    raise LLMServiceError(f"Unsupported LLM provider: {settings.LLM_PROVIDER}")

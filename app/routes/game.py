@@ -32,6 +32,7 @@ def _public_player_view(p: Dict[str, Any]) -> Dict[str, Any]:
         "player_id": p["player_id"],
         "name": p.get("display_name", ""),
         "character_id": p.get("character_id"),
+        "character_name": p.get("character"),
     }
 
 @router.get("/state")
@@ -63,7 +64,10 @@ def get_state(player_id: Optional[str] = Query(default=None, description="Option
             "player_id": me["player_id"],
             "name": me.get("display_name", ""),
             "character_id": me.get("character_id"),
+            "character_name": me.get("character"),
             "envelopes": me.get("envelopes", []),  # vue minimale {num,id}
+            "role": me.get("role"),
+            "mission": me.get("mission"),
         }
 
     return JSONResponse(content=payload)

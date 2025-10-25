@@ -1,8 +1,1 @@
-{
-  "culprit": "L'Héritier Ambitieux",
-  "weapon": "Chandelier",
-  "location": "Salon",
-  "motive": "Vengeance",
-  "timestamp": null,
-  "intro_narrative": "[stub] réponse générée à partir du prompt: L'histoire se déroule dans Manoir isolé sur une co..."
-}
+{"weapon":"Pistolet","location":"Bibliothèque du manoir","motive":"Vengeance personnelle","culprit_player_id":"03b175b7-edc3-4381-8c47-3bea5581fffd","culprit_name":"Inspecteur Lenoir","locked":true}

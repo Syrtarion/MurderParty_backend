@@ -48,6 +48,7 @@ from app.services.envelopes import summary_for_mj
 
 # Lot B (canon & rôles)
 from app.services.narrative_core import NARRATIVE  # canon LLM stocké ici par master_canon
+from app.services.character_service import CHARACTERS
 
 
 router = APIRouter(prefix="/party", tags=["party"], dependencies=[Depends(mj_required)])
@@ -210,11 +211,13 @@ def _stable_choice(items: List[str], salt: str = "canon") -> str:
     return items[idx]
 
 
-def _ensure_canon_in_game_state() -> Dict[str, Any]:
+async def _get_or_create_canon() -> Dict[str, Any]:
     """
-    S'assure qu'un canon est disponible dans GAME_STATE.state["canon"].
-    - source privilégiée : NARRATIVE.canon (écrit par /master/generate_canon)
-    - sinon -> erreur 409 (le MJ doit d'abord générer le canon)
+    Retourne un canon valide, en tentant de le générer automatiquement si absent.
+    Ordre de priorité :
+      1. GAME_STATE.state["canon"] (en mémoire)
+      2. NARRATIVE.canon (chargé depuis disque)
+      3. Génération via /master/generate_canon (fallback automatique)
     """
     canon = GAME_STATE.state.get("canon")
     if isinstance(canon, dict) and canon.get("weapon"):
@@ -226,7 +229,14 @@ def _ensure_canon_in_game_state() -> Dict[str, Any]:
         GAME_STATE.save()
         return canon
 
-    raise HTTPException(status_code=409, detail="Canon absent. Générez d'abord via /master/generate_canon.")
+    from app.routes.master_canon import CanonRequest, generate_canon as generate_canon_route  # lazy import
+
+    res = await generate_canon_route(CanonRequest())
+    canon = res.get("canon") or GAME_STATE.state.get("canon")
+    if isinstance(canon, dict) and canon.get("weapon"):
+        return canon
+
+    raise HTTPException(status_code=500, detail="Canon introuvable après tentative de génération automatique.")
 
 
 @router.post("/envelopes_hidden")
@@ -264,7 +274,7 @@ async def roles_assign():
         raise HTTPException(400, "No players registered")
 
     # 1) s'assurer d'un canon disponible dans GAME_STATE
-    canon = _ensure_canon_in_game_state()
+    canon = await _get_or_create_canon()
 
     # 2) choisir le killer :
     #    - priorité : culprit_player_id choisi par /master/generate_canon
@@ -276,21 +286,57 @@ async def roles_assign():
 
     # 3) attribuer rôles + missions
     per_player: Dict[str, Any] = {}
+    # 3.a) assigner un personnage si inexistant
+    seed = GAME_STATE.state.get("story_seed") or {}
+    missions_pool: list[dict] = list(seed.get("missions") or [])
+    culprit_missions: list[dict] = list(seed.get("culprit_missions") or [])
+
+    for pid in pids_sorted:
+        player = GAME_STATE.players.get(pid) or {}
+        if not player.get("character_id"):
+            try:
+                assigned = CHARACTERS.assign_character(pid)
+                if assigned:
+                    player["character"] = assigned.get("name")
+                    player["character_id"] = assigned.get("id")
+            except Exception:
+                # on ignore mais on n'empêche pas l'assignation des rôles
+                pass
+
     for pid in pids_sorted:
         role = "killer" if pid == culprit_pid else "innocent"
         if role == "killer":
-            mission = {
-                "title": "Échapper aux soupçons",
-                "text": "Sème le doute sur un autre invité sans te faire remarquer."
-            }
+            mission = (culprit_missions or missions_pool or [None]).pop(0) if (
+                culprit_missions or missions_pool
+            ) else None
         else:
+            mission = (missions_pool or [None]).pop(0) if missions_pool else None
+
+        if not mission:
             mission = {
                 "title": "Observer discrètement",
-                "text": "Récolte 2 indices qui disculpent un autre joueur et partage-les."
+                "text": "Récolte deux indices pertinents et partage-les avec tes alliés."
             }
+        else:
+            mission = dict(mission)
         GAME_STATE.players[pid]["role"] = role
         GAME_STATE.players[pid]["mission"] = mission
         per_player[pid] = {"role": role, "mission": mission}
+
+    # 3.b) enrichir le canon avec l'identité du coupable
+    killer_entry = GAME_STATE.players.get(culprit_pid, {})
+    canon["culprit_player_id"] = culprit_pid
+    canon["culprit_name"] = (
+        killer_entry.get("character")
+        or killer_entry.get("display_name")
+        or killer_entry.get("player_id")
+    )
+    GAME_STATE.state["canon"] = canon
+    try:
+        NARRATIVE.canon = canon
+        NARRATIVE.save()
+    except Exception:
+        pass
 
     # 4) mise à jour phase + logs
     try:
@@ -304,8 +350,17 @@ async def roles_assign():
     # 5) WS ciblés (pas de spoiler en broadcast)
     from app.services.ws_manager import ws_send_type_to_player_safe  # import local pour éviter cycles
     for pid, data in per_player.items():
-        ws_send_type_to_player_safe(pid, "role_reveal", {"role": data["role"]})
-        ws_send_type_to_player_safe(pid, "secret_mission", data["mission"])
+        role_payload = {"role": data["role"]}
+        mission_payload = data["mission"]
+
+        GAME_STATE.log_event("ws_role_reveal_sent", {"player_id": pid, "role": data["role"]})
+        GAME_STATE.log_event(
+            "ws_mission_sent",
+            {"player_id": pid, "mission_title": mission_payload.get("title")}
+        )
+
+        ws_send_type_to_player_safe(pid, "role_reveal", role_payload)
+        ws_send_type_to_player_safe(pid, "secret_mission", mission_payload)
 
     # 6) broadcast de signal
     await WS.broadcast_type("event", {"kind": "roles_assigned"})
