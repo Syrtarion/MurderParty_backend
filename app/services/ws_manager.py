@@ -8,13 +8,15 @@ Service: ws_manager.py
 - Admin: stats(), kick_player(), close_all().
 """
 from __future__ import annotations
-from typing import Dict, Set, Any
+from typing import Dict, Set, Any, Iterable
 from dataclasses import dataclass, field
 from threading import RLock
 import json
 import anyio
 import asyncio
 from starlette.websockets import WebSocket
+
+from app.services.game_state import GAME_STATE
 
 @dataclass
 class WSManager:
@@ -133,14 +135,30 @@ class WSManager:
                 success += 1
         return success
 
+    def _record_ws_dispatch(
+        self,
+        targets: Iterable[str] | None,
+        event_type: str,
+        payload: Any,
+        channel: str,
+    ) -> None:
+        try:
+            GAME_STATE.log_ws_dispatch(event_type, payload if isinstance(payload, dict) else {"data": payload}, targets, channel)
+        except Exception:
+            # on évite de casser l'envoi WS si la journalisation tombe en panne
+            pass
+
     # ---------- helpers typés ----------
     async def send_type_to_player(self, player_id: str, event_type: str, payload: Any) -> int:
+        self._record_ws_dispatch([player_id], event_type, payload, channel="player")
         return await self.send_to_player(player_id, {"type": event_type, "payload": payload})
 
     async def broadcast_type(self, event_type: str, payload: Any) -> int:
+        self._record_ws_dispatch(None, event_type, payload, channel="broadcast")
         return await self.broadcast({"type": event_type, "payload": payload})
 
     async def broadcast_all_type(self, event_type: str, payload: Any) -> int:
+        self._record_ws_dispatch(None, event_type, payload, channel="broadcast_all")
         return await self.broadcast_all({"type": event_type, "payload": payload})
 
     # ---------- admin ----------

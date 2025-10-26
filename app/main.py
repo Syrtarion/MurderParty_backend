@@ -57,6 +57,7 @@ app = FastAPI(title="Murderparty Backend")
 ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://88.180.90.78:3000",
 ]
 ALLOWED_ORIGIN_REGEX = r"http://(?:localhost|127\.0\.0\.1|\d{1,3}(?:\.\d{1,3}){3}):3000"
 app.add_middleware(

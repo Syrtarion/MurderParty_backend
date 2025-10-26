@@ -17,7 +17,7 @@ Intégrations:
 """
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Literal
 
 from app.services.game_state import GAME_STATE
 from app.services.narrative_core import NARRATIVE
@@ -71,6 +71,88 @@ def get_state(player_id: Optional[str] = Query(default=None, description="Option
         }
 
     return JSONResponse(content=payload)
+
+
+def _format_event(entry: Dict[str, Any], fallback_idx: int) -> Dict[str, Any]:
+    kind = entry.get("kind") or "event"
+    payload = entry.get("payload") or {}
+    event_type = kind
+    targets: List[str] = []
+    channel = entry.get("scope") or "system"
+
+    if kind == "ws_dispatch":
+        event_type = payload.get("event_type") or "event"
+        targets = list(payload.get("targets") or [])
+        channel = payload.get("channel") or channel
+        payload = payload.get("payload") or {}
+
+    ts = entry.get("ts")
+    event_id = entry.get("id") or f"{int((ts or 0) * 1000)}-{fallback_idx}"
+
+    return {
+        "id": event_id,
+        "type": event_type,
+        "payload": payload,
+        "ts": ts,
+        "scope": entry.get("scope"),
+        "targets": targets,
+        "channel": channel,
+    }
+
+
+def _event_visible_for_player(entry: Dict[str, Any], player_id: Optional[str]) -> bool:
+    scope = entry.get("scope") or ""
+    if scope.startswith("admin") or scope.startswith("mj"):
+        return False
+
+    if entry.get("kind") == "ws_dispatch":
+        payload = entry.get("payload") or {}
+        targets = payload.get("targets") or []
+        channel = payload.get("channel") or ""
+        if targets:
+            return bool(player_id) and player_id in targets
+        # broadcast / broadcast_all restent visibles
+        return channel in ("broadcast", "broadcast_all", "", None)
+
+    return True
+
+
+@router.get("/events")
+def get_events(
+    player_id: Optional[str] = Query(None, description="Filtre les événements privés de ce joueur"),
+    audience: Literal["player", "admin"] = Query("player", description="admin = lecture complète sans filtre"),
+    limit: int = Query(200, ge=1, le=500, description="Nombre maximum d'événements retournés"),
+    since_ts: Optional[float] = Query(None, description="Ne retourner que les événements avec ts strictement supérieur"),
+):
+    """
+    Flux d'événements consolidés.
+    - audience=player : masque les scopes admin/MJ et ne renvoie les dispatch privés que si `player_id` est fourni.
+    - audience=admin  : renvoie tout le journal tel quel (utilisation MJ / audit).
+    """
+    events = GAME_STATE.events_snapshot()
+    events.sort(key=lambda e: e.get("ts", 0) or 0)
+
+    filtered: List[Dict[str, Any]] = []
+    for idx, entry in enumerate(events):
+        ts = entry.get("ts", 0) or 0
+        if since_ts is not None and ts <= since_ts:
+            continue
+
+        if audience == "player":
+            if not _event_visible_for_player(entry, player_id):
+                continue
+        formatted = _format_event(entry, idx)
+        filtered.append(formatted)
+
+    if limit:
+        filtered = filtered[-limit:]
+
+    return {
+        "ok": True,
+        "count": len(filtered),
+        "events": filtered,
+        "latest_ts": filtered[-1]["ts"] if filtered else since_ts,
+    }
 
 @router.get("/canon")
 async def get_canon():
