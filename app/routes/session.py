@@ -77,9 +77,16 @@ async def session_status(session_id: Optional[str] = Query(default=None, descrip
 
 
 @router.post("/start_next")
-async def session_start_next(session_id: Optional[str] = Query(default=None)):
+async def session_start_next(
+    session_id: Optional[str] = Query(default=None),
+    auto_prepare_round: bool = Query(default=True, description="Préparer automatiquement la manche suivante"),
+    use_llm_rounds: bool = Query(default=True, description="Utiliser le LLM pour préparer le round"),
+):
     engine = get_session_engine(_normalize_session_id(session_id))
-    return await engine.start_next_round()
+    return await engine.begin_next_round(
+        auto_prepare_round=auto_prepare_round,
+        use_llm_rounds=use_llm_rounds,
+    )
 
 
 @router.post("/confirm_start")

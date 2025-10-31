@@ -1,18 +1,19 @@
-{"id": "7ea7d470-297a-4f02-8d38-87512336db80", "kind": "party_started", "scope": "system", "payload": {"phase": "JOIN", "join_locked": false}, "ts": 1761943892.4076004}
-{"id": "95c76d17-c0ac-44a7-a685-207209332dbb", "kind": "player_join", "scope": "system", "payload": {"player_id": "4a13f8e0-498b-444e-83c8-2e38c77b027c", "display_name": "marion"}, "ts": 1761943903.9418368}
-{"id": "a6c98d9e-ddee-4e93-bde2-b3420c16386e", "kind": "player_register", "scope": "system", "payload": {"player_id": "4a13f8e0-498b-444e-83c8-2e38c77b027c", "display_name": "marion", "character": null, "session_id": "c5d715f112ac458d8c22caa40bca3876"}, "ts": 1761943904.0076113}
-{"id": "a19c8395-0201-4845-ae41-4b47d985ead2", "kind": "player_join", "scope": "system", "payload": {"player_id": "0a72964f-376b-4e2e-bbd9-60068dccada2", "display_name": "morgan"}, "ts": 1761943910.355129}
-{"id": "33bfc41e-959b-4d8c-bd47-655a6d7eb001", "kind": "player_register", "scope": "system", "payload": {"player_id": "0a72964f-376b-4e2e-bbd9-60068dccada2", "display_name": "morgan", "character": null, "session_id": "c5d715f112ac458d8c22caa40bca3876"}, "ts": 1761943910.427149}
-{"id": "8b2db54a-716b-4ed7-a21a-5539c8925360", "kind": "join_locked", "scope": "system", "payload": {}, "ts": 1761943919.8036814}
-{"id": "ff9851c0-8aba-4c05-b073-3abe5fbcce7d", "kind": "phase_change", "scope": "system", "payload": {"phase": "ENVELOPES_DISTRIBUTION"}, "ts": 1761943919.8046844}
-{"id": "5dd5d233-67e6-49ea-b7d3-e38be3d7f07b", "kind": "envelopes_distributed", "scope": "system", "payload": {"assigned": 4, "left": 0, "per_player": {"4a13f8e0-498b-444e-83c8-2e38c77b027c": 2, "0a72964f-376b-4e2e-bbd9-60068dccada2": 2}}, "ts": 1761943919.8067694}
-{"id": "17d5f75b-79b1-4f99-9962-9e6375540871", "kind": "phase_change", "scope": "system", "payload": {"phase": "ENVELOPES_HIDDEN"}, "ts": 1761943922.258501}
-{"id": "6f2683f0-901b-4a57-8145-3ef6370ff77f", "kind": "roles_assigned", "scope": "system", "payload": {"killer_player_id": "4a13f8e0-498b-444e-83c8-2e38c77b027c"}, "ts": 1761943983.1570785}
-{"id": "78bcfaa8-6c4f-41a0-8455-120584f7a354", "kind": "phase_change", "scope": "system", "payload": {"phase": "ROLES_ASSIGNED"}, "ts": 1761943983.1590784}
-{"id": "0235a94e-c9ce-4ac1-8181-b994db0f8d76", "kind": "ws_role_reveal_sent", "scope": "system", "payload": {"player_id": "0a72964f-376b-4e2e-bbd9-60068dccada2", "role": "innocent"}, "ts": 1761943983.1645877}
-{"id": "b5638eba-6ef2-405d-9af4-d653131474a0", "kind": "ws_mission_sent", "scope": "system", "payload": {"player_id": "0a72964f-376b-4e2e-bbd9-60068dccada2", "mission_title": null}, "ts": 1761943983.1670892}
-{"id": "356aaf74-d342-4bc4-beed-10c4b33c1141", "kind": "ws_role_reveal_sent", "scope": "system", "payload": {"player_id": "4a13f8e0-498b-444e-83c8-2e38c77b027c", "role": "killer"}, "ts": 1761943983.1690931}
-{"id": "8e706393-667a-4ce2-8d87-1f639c027226", "kind": "ws_mission_sent", "scope": "system", "payload": {"player_id": "4a13f8e0-498b-444e-83c8-2e38c77b027c", "mission_title": null}, "ts": 1761943983.1720922}
-{"id": "020cf422-c5ea-46cf-999a-da3276c524b5", "kind": "session_intro_prepared", "scope": "system", "payload": {"prepared_at": 1761944474.4470365, "title": "Prologue"}, "ts": 1761944474.4510396}
-{"id": "9fd0d99f-60d7-4a3a-944d-c5764d066d0e", "kind": "session_intro_confirmed", "scope": "system", "payload": {"confirmed_at": 1761944474.4540403}, "ts": 1761944474.457039}
-{"id": "2e33e97d-899c-4c88-9f97-488854b77747", "kind": "round_prepared", "scope": "system", "payload": {"round_index": 1}, "ts": 1761944528.4058807}
+{"id": "bc722b5a-a602-4dd6-87ab-6f8d43b32c49", "kind": "party_started", "scope": "system", "payload": {"phase": "JOIN", "join_locked": false}, "ts": 1761946085.5678022}
+{"id": "52f94759-db44-4c92-8a27-5b97817dfe15", "kind": "party_started", "scope": "system", "payload": {"phase": "JOIN", "join_locked": false}, "ts": 1761946208.4586992}
+{"id": "e1cc5910-386f-42c5-8f1f-969aad879766", "kind": "player_join", "scope": "system", "payload": {"player_id": "32bddceb-8993-44bb-9833-8e4dc106bf73", "display_name": "marion"}, "ts": 1761946225.5598686}
+{"id": "a06e02bb-53c8-4866-8fcf-05d735bb449c", "kind": "player_register", "scope": "system", "payload": {"player_id": "32bddceb-8993-44bb-9833-8e4dc106bf73", "display_name": "marion", "character": null, "session_id": "c5d715f112ac458d8c22caa40bca3876"}, "ts": 1761946225.6248844}
+{"id": "a53cb166-ab9d-40a4-bdd5-8d3083b01b39", "kind": "player_join", "scope": "system", "payload": {"player_id": "59e257f1-64f9-432a-8738-4cbb4715ec5b", "display_name": "morgan"}, "ts": 1761946233.7516568}
+{"id": "cdf39015-77d9-4eb9-b45d-e462206c8893", "kind": "player_register", "scope": "system", "payload": {"player_id": "59e257f1-64f9-432a-8738-4cbb4715ec5b", "display_name": "morgan", "character": null, "session_id": "c5d715f112ac458d8c22caa40bca3876"}, "ts": 1761946233.8236763}
+{"id": "b806b4df-d03e-4e9e-b81f-61760288eb7b", "kind": "join_locked", "scope": "system", "payload": {}, "ts": 1761946241.6190653}
+{"id": "5dc31c35-c2ae-4b66-8214-50b4937324b0", "kind": "phase_change", "scope": "system", "payload": {"phase": "ENVELOPES_DISTRIBUTION"}, "ts": 1761946241.6200652}
+{"id": "afeb5f1a-0819-4eec-a9a0-3657a73f956c", "kind": "envelopes_distributed", "scope": "system", "payload": {"assigned": 4, "left": 0, "per_player": {"32bddceb-8993-44bb-9833-8e4dc106bf73": 2, "59e257f1-64f9-432a-8738-4cbb4715ec5b": 2}}, "ts": 1761946241.637069}
+{"id": "aa49e901-4243-4eed-9c35-9a9dd1358d6d", "kind": "phase_change", "scope": "system", "payload": {"phase": "ENVELOPES_HIDDEN"}, "ts": 1761946243.9501863}
+{"id": "cd29b832-10b9-49ac-8e62-f74074c35c3d", "kind": "roles_assigned", "scope": "system", "payload": {"killer_player_id": "59e257f1-64f9-432a-8738-4cbb4715ec5b"}, "ts": 1761946312.648921}
+{"id": "8275ef2c-f4bd-4612-8512-f5fb9264bb72", "kind": "phase_change", "scope": "system", "payload": {"phase": "ROLES_ASSIGNED"}, "ts": 1761946312.6519215}
+{"id": "c77eb9fa-e806-40a9-9c6b-85290af27da5", "kind": "ws_role_reveal_sent", "scope": "system", "payload": {"player_id": "32bddceb-8993-44bb-9833-8e4dc106bf73", "role": "innocent"}, "ts": 1761946312.6569216}
+{"id": "17bed3a9-dde0-44fc-a847-bb1c2e53cfd9", "kind": "ws_mission_sent", "scope": "system", "payload": {"player_id": "32bddceb-8993-44bb-9833-8e4dc106bf73", "mission_title": null}, "ts": 1761946312.6589222}
+{"id": "52defea5-f973-4f35-8e9b-d467b0eea091", "kind": "ws_role_reveal_sent", "scope": "system", "payload": {"player_id": "59e257f1-64f9-432a-8738-4cbb4715ec5b", "role": "killer"}, "ts": 1761946312.6619241}
+{"id": "f4a7e5c4-69ed-4700-9e56-7742855b9e92", "kind": "ws_mission_sent", "scope": "system", "payload": {"player_id": "59e257f1-64f9-432a-8738-4cbb4715ec5b", "mission_title": null}, "ts": 1761946312.6644316}
+{"id": "6d6bb9af-24dd-4d6e-800b-4b7d24323a1f", "kind": "session_intro_prepared", "scope": "system", "payload": {"prepared_at": 1761946331.6855478, "title": "Prologue"}, "ts": 1761946331.6897018}
+{"id": "297787aa-cfa1-404e-ad1d-8f4b8b457dbc", "kind": "session_intro_confirmed", "scope": "system", "payload": {"confirmed_at": 1761946331.692705}, "ts": 1761946331.694705}
+{"id": "a27451f9-b1e3-43b2-8c72-0c005521ea06", "kind": "round_prepared", "scope": "system", "payload": {"round_index": 1}, "ts": 1761946377.316313}

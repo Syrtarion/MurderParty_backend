@@ -118,6 +118,8 @@ async def party_start(
     try:
         state.state["phase_label"] = "JOIN"
         state.state["join_locked"] = False
+        if not state.state.get("join_code"):
+            state.state["join_code"] = sid[:6].upper()
         state.state.pop("session", None)
         state.log_event("party_started", {"phase": "JOIN", "join_locked": False})
         state.save()
@@ -171,12 +173,14 @@ async def party_launch(
         raise HTTPException(status_code=500, detail="Echec génération intro") from exc
 
     intro_confirmed = confirm_result.get("intro") or intro_payload
-    return {
-        "ok": True,
+    response = {
+        "ok": confirm_result.get("ok", True),
         "intro": intro_confirmed,
         "prepared_round": confirm_result.get("prepared_round"),
-        "round": confirm_result.get("round"),
     }
+    if confirm_result.get("already_confirmed"):
+        response["already_confirmed"] = True
+    return response
 
 
 @router.get("/status")

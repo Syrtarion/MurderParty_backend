@@ -115,40 +115,6 @@ class SessionEngine:
         sess.setdefault("intro", {})
         return sess
 
-    def _prepare_round_if_needed(self, index: int, *, use_llm: bool = True) -> Optional[Dict[str, Any]]:
-        """Generate round assets when missing (idempotent)."""
-        if index <= 0:
-            return None
-
-        sess = self._state()
-        prepared_rounds = sess.setdefault("prepared_rounds", {})
-        key = str(index)
-        existing = prepared_rounds.get(key)
-        if existing and not existing.get("error"):
-            return existing
-
-        try:
-            payload = prepare_round_assets(self.game_state, index, use_llm=use_llm)
-            prepared_rounds[key] = payload
-            self.game_state.log_event("round_prepared", {"round_index": index})
-            self.game_state.save()
-            ws_broadcast_type_safe(
-                "event",
-                {
-                    "kind": "round_prepared",
-                    "session_id": self.game_state.session_id,
-                    "round_index": index,
-                    "prepared": payload,
-                },
-            )
-            return payload
-        except Exception as exc:  # pragma: no cover - fallback path
-            error_payload = {"error": str(exc)}
-            prepared_rounds[key] = error_payload
-            self.game_state.log_event("round_preparation_failed", {"round_index": index, "error": str(exc)})
-            self.game_state.save()
-            return error_payload
-
     def status(self) -> Dict[str, Any]:
         """Snapshot synthétique pour UI MJ: phase, manche courante/suivante, timer actif."""
         sess = self._state()
@@ -242,34 +208,37 @@ class SessionEngine:
             },
         )
 
+        round_index = sess.get("round_index", 0)
+        start_payload: Dict[str, Any] | None = None
         prepared_payload: Dict[str, Any] | None = None
-        if auto_prepare_round:
-            next_index = sess.get("round_index", 0) + 1
-            prepared_payload = self._prepare_round_if_needed(next_index, use_llm=use_llm_rounds)
+
+        if auto_prepare_round and round_index == 0:
+            prepared_rounds = sess.get("prepared_rounds", {})
+            if "1" not in prepared_rounds:
+                try:
+                    prepared_payload = prepare_round_assets(self.game_state, 1, use_llm=use_llm_rounds)
+                    self.game_state.log_event("round_prepared", {"round_index": 1})
+                    ws_broadcast_type_safe(
+                        "event",
+                        {
+                            "kind": "round_prepared",
+                            "session_id": self.game_state.session_id,
+                            "round_index": 1,
+                            "prepared": prepared_payload,
+                        },
+                    )
+                except Exception as exc:  # pragma: no cover - fallback path
+                    prepared_payload = {"error": str(exc)}
+                    self.game_state.log_event("round_preparation_failed", {"round_index": 1, "error": str(exc)})
+
+            start_payload = await self.start_next_round()
 
         return {
             "ok": True,
             "intro": intro,
             "prepared_round": prepared_payload,
-        }
-
-    async def begin_next_round(self, *, auto_prepare_round: bool = True, use_llm_rounds: bool = True) -> Dict[str, Any]:
-        """Prépare (optionnellement) et lance la manche suivante après validation de l'intro."""
-        sess = self._state()
-        next_index = sess.get("round_index", 0) + 1
-        prepared_payload: Optional[Dict[str, Any]] = None
-        if auto_prepare_round:
-            prepared_payload = self._prepare_round_if_needed(next_index, use_llm=use_llm_rounds)
-
-        start_payload = await self.start_next_round()
-        ok = bool(start_payload.get("ok"))
-        response: Dict[str, Any] = {
-            "ok": ok,
             "round": start_payload,
         }
-        if prepared_payload is not None:
-            response["prepared_round"] = prepared_payload
-        return response
 
     async def start_next_round(self) -> Dict[str, Any]:
         """Passe au round suivant, annonce l'intro et met en phase INTRO. Ne démarre PAS le jeu physique."""
