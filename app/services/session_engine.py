@@ -5,7 +5,7 @@ Rôle:
 - Timer souple intégré (mi-temps + fin) sans forcer la clôture.
 
 I/O:
-- session_plan.json (liste ordonnée des rounds)
+- story_seed.json (section rounds[])
 - GAME_STATE.state["session"] (snapshot moteur de round)
 
 WS:
@@ -22,17 +22,20 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from app.config.settings import settings
-from app.services.game_state import GAME_STATE
-from app.services.ws_manager import WS
+from app.services.game_state import GAME_STATE, GameState
+from app.services.ws_manager import WS, ws_broadcast_type_safe
 from app.services.llm_engine import run_llm  # utilise ton LLM (Ollama)
+from app.services.story_seed import load_story_seed_dict, StorySeedError
+from app.services.session_intro import prepare_session_intro
+from app.services.round_preparation import prepare_round_assets
 
 DATA_DIR = Path(settings.DATA_DIR)
-SESSION_PLAN_PATH = DATA_DIR / "session_plan.json"
 
 # Phases internes d'un round
 ROUND_IDLE = "IDLE"               # aucun round actif
@@ -44,10 +47,20 @@ ROUND_COOLDOWN = "COOLDOWN"       # fin du mini-jeu, outro, distribution indices
 # -------------------- utilitaires --------------------
 
 def _load_plan() -> Dict[str, Any]:
-    """Lecture tolérante du plan depuis session_plan.json (retourne structure vide sinon)."""
+    """Lecture du plan depuis story_seed (fallback session_plan.json)."""
     try:
-        if SESSION_PLAN_PATH.exists():
-            return json.loads(SESSION_PLAN_PATH.read_text(encoding="utf-8"))
+        seed = load_story_seed_dict()
+        rounds = seed.get("rounds") or []
+        if rounds:
+            return {"rounds": rounds}
+    except StorySeedError:
+        pass
+    legacy_path = DATA_DIR / "session_plan.json"
+    try:
+        if legacy_path.exists():
+            data = json.loads(legacy_path.read_text(encoding="utf-8")) or {}
+            if data.get("rounds"):
+                return data
     except Exception:
         pass
     return {"rounds": []}
@@ -87,16 +100,19 @@ async def _narrate(event: str, text_hint: Optional[str] = None, extra: Optional[
 
 @dataclass
 class SessionEngine:
+    game_state: GameState = field(default_factory=lambda: GAME_STATE)
     _timer_task: Optional[asyncio.Task] = field(default=None, init=False, repr=False)
 
     # === état courant ===
     def _state(self) -> Dict[str, Any]:
-        """Retourne (et initialise si besoin) le sous-état 'session' dans GAME_STATE.state."""
-        sess = GAME_STATE.state.setdefault("session", {})
+        """Retourne (et initialise si besoin) le sous-état 'session' dans self.game_state.state."""
+        sess = self.game_state.state.setdefault("session", {})
         sess.setdefault("round_index", 0)  # 0 = pas encore commencé
         sess.setdefault("round_phase", ROUND_IDLE)
         sess.setdefault("round_results", {})  # { round_id: { winners: [...], meta: {...} } }
         sess.setdefault("plan_hash", None)
+        sess.setdefault("prepared_rounds", {})
+        sess.setdefault("intro", {})
         return sess
 
     def status(self) -> Dict[str, Any]:
@@ -107,16 +123,123 @@ class SessionEngine:
         idx = sess.get("round_index", 0)
         current = rounds[idx-1] if 1 <= idx <= len(rounds) else None
         next_r = rounds[idx] if idx < len(rounds) else None
+        prepared = None
+        if 1 <= idx <= len(rounds):
+            prepared = sess.get("prepared_rounds", {}).get(str(idx))
+        intro_info = sess.get("intro") or {}
+        intro_status = {
+            "status": intro_info.get("status", "pending"),
+            "prepared_at": intro_info.get("prepared_at"),
+            "confirmed_at": intro_info.get("confirmed_at"),
+            "title": intro_info.get("title"),
+            "text": intro_info.get("text"),
+            "error": intro_info.get("error"),
+        }
         return {
             "phase": sess["round_phase"],
             "round_index": idx,
             "current_round": current,
             "next_round": next_r,
             "total_rounds": len(rounds),
-            "has_timer": bool(self._timer_task and not self._timer_task.done())
+            "has_timer": bool(self._timer_task and not self._timer_task.done()),
+            "prepared_round": prepared,
+            "session_id": self.game_state.session_id,
+            "join_code": self.game_state.state.get("join_code"),
+            "players_count": len(self.game_state.players),
+            "intro": intro_status,
         }
 
     # === cycle ===
+    def prepare_intro(self, *, use_llm: bool = True) -> Dict[str, Any]:
+        """Generate (or reuse) the global introduction for the session."""
+        sess = self._state()
+        intro = sess.get("intro") or {}
+        if intro.get("status") == "ready" and intro.get("text"):
+            return intro
+
+        payload = prepare_session_intro(self.game_state, use_llm=use_llm)
+        sess["intro"] = payload
+        self.game_state.log_event(
+            "session_intro_prepared",
+            {"prepared_at": payload.get("prepared_at"), "title": payload.get("title")},
+        )
+        ws_broadcast_type_safe(
+            "narration",
+            {
+                "event": "session_intro",
+                "text": payload.get("text"),
+                "session_id": self.game_state.session_id,
+            },
+        )
+        ws_broadcast_type_safe(
+            "event",
+            {
+                "kind": "session_intro_ready",
+                "session_id": self.game_state.session_id,
+                "intro": payload,
+            },
+        )
+        return payload
+
+    async def confirm_intro(self, *, auto_prepare_round: bool = True, use_llm_rounds: bool = True) -> Dict[str, Any]:
+        """Mark the intro as confirmed and optionally trigger the first round."""
+        sess = self._state()
+        intro = sess.get("intro") or {}
+        if not intro:
+            raise RuntimeError("Aucune intro n'a été préparée pour cette session.")
+
+        if intro.get("status") == "confirmed":
+            return {"ok": True, "already_confirmed": True, "round_index": sess.get("round_index", 0)}
+
+        intro["status"] = "confirmed"
+        intro["confirmed_at"] = time.time()
+        sess["intro"] = intro
+        self.game_state.save()
+        self.game_state.log_event(
+            "session_intro_confirmed",
+            {"confirmed_at": intro["confirmed_at"]},
+        )
+        ws_broadcast_type_safe(
+            "event",
+            {
+                "kind": "session_intro_confirmed",
+                "session_id": self.game_state.session_id,
+                "intro": intro,
+            },
+        )
+
+        round_index = sess.get("round_index", 0)
+        start_payload: Dict[str, Any] | None = None
+        prepared_payload: Dict[str, Any] | None = None
+
+        if auto_prepare_round and round_index == 0:
+            prepared_rounds = sess.get("prepared_rounds", {})
+            if "1" not in prepared_rounds:
+                try:
+                    prepared_payload = prepare_round_assets(self.game_state, 1, use_llm=use_llm_rounds)
+                    self.game_state.log_event("round_prepared", {"round_index": 1})
+                    ws_broadcast_type_safe(
+                        "event",
+                        {
+                            "kind": "round_prepared",
+                            "session_id": self.game_state.session_id,
+                            "round_index": 1,
+                            "prepared": prepared_payload,
+                        },
+                    )
+                except Exception as exc:  # pragma: no cover - fallback path
+                    prepared_payload = {"error": str(exc)}
+                    self.game_state.log_event("round_preparation_failed", {"round_index": 1, "error": str(exc)})
+
+            start_payload = await self.start_next_round()
+
+        return {
+            "ok": True,
+            "intro": intro,
+            "prepared_round": prepared_payload,
+            "round": start_payload,
+        }
+
     async def start_next_round(self) -> Dict[str, Any]:
         """Passe au round suivant, annonce l'intro et met en phase INTRO. Ne démarre PAS le jeu physique."""
         plan = _load_plan()
@@ -143,12 +266,23 @@ class SessionEngine:
         # phase INTRO + narration d'ouverture
         r = rounds[idx-1]
         sess["round_phase"] = ROUND_INTRO
-        GAME_STATE.save()
+        self.game_state.save()
 
-        hint = None
-        nar = r.get("narration") or {}
-        hint = nar.get("intro") or f"Préparez-vous pour le mini-jeu '{r.get('mini_game','?')}'."
-        await _narrate("round_intro", hint, {"round_index": idx, "mini_game": r.get("mini_game")})
+        prepared = sess.get("prepared_rounds", {}).get(str(idx)) or {}
+        narration = prepared.get("narration") if isinstance(prepared, dict) else {}
+        intro_text = narration.get("intro_text") if isinstance(narration, dict) else None
+        if intro_text:
+            await WS.broadcast({
+                "type": "narration",
+                "event": "round_intro",
+                "text": intro_text,
+                "round_index": idx,
+                "session_id": self.game_state.session_id,
+            })
+        else:
+            nar = r.get("narration") or {}
+            hint = nar.get("intro") or f"Préparez-vous pour le mini-jeu '{r.get('mini_game','?')}'."
+            await _narrate("round_intro", hint, {"round_index": idx, "mini_game": r.get("mini_game")})
 
         # Prompt UI MJ pour démarrer la manche côté "physique"
         await WS.broadcast({
@@ -158,6 +292,14 @@ class SessionEngine:
             "mini_game": r.get("mini_game"),
             "theme": r.get("theme")
         })
+        if prepared:
+            await WS.broadcast({
+                "type": "event",
+                "kind": "round_assets_ready",
+                "session_id": self.game_state.session_id,
+                "round_index": idx,
+                "assets": prepared,
+            })
         return {"ok": True, "round_index": idx, "phase": ROUND_INTRO, "round": r}
 
     async def confirm_start(self) -> Dict[str, Any]:
@@ -166,7 +308,7 @@ class SessionEngine:
         if sess["round_phase"] != ROUND_INTRO:
             return {"ok": False, "error": "Aucun round en phase INTRO."}
         sess["round_phase"] = ROUND_ACTIVE
-        GAME_STATE.save()
+        self.game_state.save()
 
         idx = sess["round_index"]
         plan = _load_plan()
@@ -197,15 +339,26 @@ class SessionEngine:
         rr = sess["round_results"]
         rr[str(idx)] = {"winners": winners or [], "meta": meta or {}}
         sess["round_phase"] = ROUND_COOLDOWN
-        GAME_STATE.save()
+        self.game_state.save()
 
         plan = _load_plan()
         r = plan.get("rounds", [])[idx-1]
 
-        # Outro + prompt pour préparer la suite
-        nar = r.get("narration") or {}
-        hint = nar.get("outro") or "Le silence retombe. Les regards s'échangent."
-        await _narrate("round_end", hint, {"round_index": idx})
+        prepared = sess.get("prepared_rounds", {}).get(str(idx)) or {}
+        narration = prepared.get("narration") if isinstance(prepared, dict) else {}
+        outro_text = narration.get("outro_text") if isinstance(narration, dict) else None
+        if outro_text:
+            await WS.broadcast({
+                "type": "narration",
+                "event": "round_end",
+                "text": outro_text,
+                "round_index": idx,
+                "session_id": self.game_state.session_id,
+            })
+        else:
+            nar = r.get("narration") or {}
+            hint = nar.get("outro") or "Le silence retombe. Les regards s'échangent."
+            await _narrate("round_end", hint, {"round_index": idx})
         await WS.broadcast({"type": "prompt", "kind": "next_round_ready", "round_index": idx})
         return {"ok": True, "phase": ROUND_COOLDOWN}
 

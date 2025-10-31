@@ -10,7 +10,7 @@ Phases:
 I/O:
 - story_seed.json (enveloppes à répartir)
 - characters.json (attribution simple si dispo)
-- session_plan.json (lecture d'information pour status)
+- story_seed.json (lecture de rounds et enveloppes)
 
 Notes:
 - Méthodes `players_ready()` et `envelopes_done()` envoient des WS ciblés/collectifs.
@@ -28,6 +28,7 @@ from app.services.game_state import GAME_STATE
 from app.services.narrative_core import NARRATIVE
 from app.services.ws_manager import WS
 from app.config.settings import settings
+from app.services.story_seed import load_story_seed_dict, StorySeedError
 
 DATA_DIR = Path(settings.DATA_DIR)
 
@@ -40,8 +41,6 @@ SESSION_ACTIVE = "SESSION_ACTIVE"
 ACCUSATION_OPEN = "ACCUSATION_OPEN"
 ENDED = "ENDED"
 
-SESSION_PLAN_PATH = DATA_DIR / "session_plan.json"
-STORY_SEED_PATH = DATA_DIR / "story_seed.json"
 CHARACTERS_PATH = DATA_DIR / "characters.json"
 
 
@@ -131,24 +130,30 @@ class MJEngine:
         return {"ok": True, "phase": SESSION_ACTIVE, "assigned_roles": roles}
 
     def status(self) -> Dict[str, Any]:
-        """Résumé utile pour le front MJ (phase, nombre de joueurs, présence d’un plan, round suivant)."""
+        """Resume utile pour le front MJ (phase, joueurs, presence d'un plan)."""
         players = GAME_STATE.players or {}
         phase = self.phase()
-        # Lecture (facultative) du plan
-        plan = _load_json(SESSION_PLAN_PATH, {"rounds": []})
+        try:
+            seed = load_story_seed_dict()
+            rounds = seed.get("rounds") or []
+        except StorySeedError:
+            rounds = []
         return {
             "phase": phase,
             "players_count": len(players),
             "players": list(players.keys()),
-            "has_session_plan": bool(plan.get("rounds")),
-            "next_round_id": 1 if plan.get("rounds") else None,
+            "has_session_plan": bool(rounds),
+            "next_round_id": 1 if rounds else None,
         }
 
     # ----------------- Helpers internes -----------------
 
     async def _assign_envelopes_equitable(self) -> Dict[str, List[int]]:
         """Répartit équitablement les enveloppes à cacher entre les joueurs (round-robin) et notifie via WS."""
-        seed = _load_json(STORY_SEED_PATH, {})
+        try:
+            seed = load_story_seed_dict()
+        except StorySeedError:
+            seed = {}
         envelopes = seed.get("envelopes", [])
         if not envelopes:
             # Pas d'enveloppes configurées → on log seulement

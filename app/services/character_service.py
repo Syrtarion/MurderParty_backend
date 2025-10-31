@@ -1,83 +1,86 @@
 """
 Service: character_service.py
-Rôle:
-- Gérer l'attribution des personnages et enveloppes aux joueurs.
-- Deux modes:
-  1) Mode "seed": lit/écrit directement dans GAME_STATE.state["story_seed"].
-  2) Mode "legacy": persiste via fichiers `characters.json` et `characters_assigned.json`.
+Role:
+- Manage character attribution and envelope assignment for players.
+- Two operating modes:
+  1) Seed mode: read/write directly in GAME_STATE.state["story_seed"].
+  2) Legacy mode: fall back to characters.json / characters_assigned.json files.
 
-Intégrations:
-- GAME_STATE: accès au story_seed en mémoire + save globale.
-- io_utils: lecture/écriture JSON legacy.
-- settings.DATA_DIR: répertoires des fichiers.
-
-Notes de conception:
-- Verrou RLock pour sécuriser les accès concurrents (WS + endpoints).
-- `list_available()` retourne les rôles non assignés; `assign_character()` consomme un rôle.
-- `assign_envelopes()` ne fonctionne qu'en mode seed (retourne [] en legacy).
+Concurrency:
+- Guarded by an RLock to avoid race conditions when several routes trigger assignments.
 """
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
-from typing import Dict, Any, Optional, List
+from typing import Any, Dict, List, Optional
 
 from app.config.settings import settings
 from .io_utils import read_json, write_json
-from app.services.game_state import GAME_STATE
+from app.services.game_state import GAME_STATE, GameState
+
 
 DATA_DIR = Path(settings.DATA_DIR)
-CHAR_PATH = DATA_DIR / "characters.json"            # mode legacy (sans story_seed)
-ASSIGN_PATH = DATA_DIR / "characters_assigned.json" # mode legacy (mapping player_id -> character_id)
+CHAR_PATH = DATA_DIR / "characters.json"
+ASSIGN_PATH = DATA_DIR / "characters_assigned.json"
+
 
 @dataclass
 class CharacterService:
     _lock: RLock = field(default_factory=RLock, init=False, repr=False)
 
-    # --- MODE LEGACY (fichiers) ---
-    characters: Dict[str, Dict[str, Any]] = field(default_factory=dict)  # id -> character
-    assigned: Dict[str, str] = field(default_factory=dict)               # player_id -> character_id
+    # Legacy cache (files)
+    characters: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    assigned: Dict[str, str] = field(default_factory=dict)
 
-    def _seed(self) -> Optional[Dict[str, Any]]:
-        """Retourne le story_seed courant si présent, sinon None (mode legacy)."""
-        seed = GAME_STATE.state.get("story_seed")
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+    def _resolve_state(self, game_state: GameState | None = None) -> GameState:
+        """Return the effective GameState to use (override or global singleton)."""
+        return game_state or GAME_STATE
+
+    def _seed(self, game_state: GameState | None = None) -> Optional[Dict[str, Any]]:
+        """Return the active story_seed when running in seed mode."""
+        state = self._resolve_state(game_state)
+        seed = state.state.get("story_seed")
         return seed if isinstance(seed, dict) else None
 
-    def _use_seed(self) -> bool:
-        """True si l'app fonctionne en mode story_seed (prioritaire), False si legacy fichiers."""
-        return self._seed() is not None
+    def _use_seed(self, game_state: GameState | None = None) -> bool:
+        """True when the application is operating with story_seed as the source of truth."""
+        return self._seed(game_state) is not None
 
-    # -------------------------
-    # Chargement / Sauvegarde
-    # -------------------------
+    # ------------------------------------------------------------------
+    # Load / Save
+    # ------------------------------------------------------------------
     def load(self) -> None:
-        """Charge les données en mode legacy. En mode seed, rien à faire (lecture via GAME_STATE)."""
+        """Load legacy files. No-op when running in seed mode."""
         with self._lock:
             if self._use_seed():
-                # Story seed en mémoire: pas de chargement fichier requis
                 return
             raw = read_json(CHAR_PATH) or {"characters": []}
             self.characters = {c["id"]: c for c in raw.get("characters", [])}
             self.assigned = read_json(ASSIGN_PATH) or {}
 
-    def save(self) -> None:
-        """Persiste: en mode seed → GAME_STATE.save(); en legacy → écrit le mapping assigned."""
+    def save(self, game_state: GameState | None = None) -> None:
+        """Persist current assignments depending on the active mode."""
         with self._lock:
-            if self._use_seed():
-                GAME_STATE.save()
+            if self._use_seed(game_state):
+                self._resolve_state(game_state).save()
             else:
                 write_json(ASSIGN_PATH, self.assigned)
 
-    # -------------------------
-    # Characters (rôles)
-    # -------------------------
-    def list_available(self) -> Dict[str, Dict[str, Any]]:
-        """Retourne les personnages disponibles (non assignés) selon le mode actif."""
+    # ------------------------------------------------------------------
+    # Characters
+    # ------------------------------------------------------------------
+    def list_available(self, game_state: GameState | None = None) -> Dict[str, Dict[str, Any]]:
+        """Return available characters (not yet assigned)."""
         with self._lock:
-            if self._use_seed():
-                seed = self._seed() or {}
+            if self._use_seed(game_state):
+                seed = self._seed(game_state) or {}
                 chars: List[Dict[str, Any]] = seed.get("characters") or []
-                free = {}
+                free: Dict[str, Dict[str, Any]] = {}
                 for ch in chars:
                     if not isinstance(ch, dict):
                         continue
@@ -85,72 +88,80 @@ class CharacterService:
                     if cid and not ch.get("assigned_player_id"):
                         free[cid] = ch
                 return free
-            else:
-                used = set(self.assigned.values())
-                return {cid: c for cid, c in self.characters.items() if cid not in used}
+            used = set(self.assigned.values())
+            return {cid: c for cid, c in self.characters.items() if cid not in used}
 
-    def get_assigned(self, player_id: str) -> Optional[Dict[str, Any]]:
-        """Retourne le personnage déjà assigné à player_id, ou None s'il n'y en a pas."""
+    def get_assigned(
+        self,
+        player_id: str,
+        game_state: GameState | None = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the character already assigned to player_id, if any."""
         with self._lock:
-            if self._use_seed():
-                seed = self._seed() or {}
+            if self._use_seed(game_state):
+                seed = self._seed(game_state) or {}
                 chars: List[Dict[str, Any]] = seed.get("characters") or []
                 for ch in chars:
                     if isinstance(ch, dict) and ch.get("assigned_player_id") == player_id:
                         return ch
                 return None
-            else:
-                cid = self.assigned.get(player_id)
-                if not cid:
-                    return None
-                return self.characters.get(cid)
+            cid = self.assigned.get(player_id)
+            if not cid:
+                return None
+            return self.characters.get(cid)
 
-    def assign_character(self, player_id: str) -> Optional[Dict[str, Any]]:
+    def assign_character(
+        self,
+        player_id: str,
+        game_state: GameState | None = None,
+    ) -> Optional[Dict[str, Any]]:
         """
-        Attribue un rôle au joueur si disponible.
-        - Mode seed: marque `assigned_player_id` dans story_seed.characters[] puis sauvegarde.
-        - Mode legacy: met à jour `self.assigned` puis sauvegarde le mapping.
-        Retourne le dict du personnage, ou None si plus aucun rôle libre.
+        Assign a character to the player if possible.
+        Returns the character dict, or None when nothing is available.
         """
         with self._lock:
-            # Si déjà attribué, renvoyer l'existant (idempotent)
-            current = self.get_assigned(player_id)
+            current = self.get_assigned(player_id, game_state=game_state)
             if current:
                 return current
 
-            if self._use_seed():
-                free = self.list_available()
+            if self._use_seed(game_state):
+                free = self.list_available(game_state=game_state)
                 if not free:
                     return None
-                # Choix simple: premier disponible (déterministe sur l'ordre de fichier)
                 cid, ch = next(iter(free.items()))
                 ch["assigned_player_id"] = player_id
-                self.save()
-                return ch
-            else:
-                free = self.list_available()
-                if not free:
-                    return None
-                cid, ch = next(iter(free.items()))
-                self.assigned[player_id] = cid
-                self.save()
+                self.save(game_state=game_state)
                 return ch
 
-    # -------------------------
-    # Enveloppes
-    # -------------------------
-    def assign_envelopes(self, player_id: str, count: int = 1) -> List[Dict[str, Any]]:
+            free = self.list_available()
+            if not free:
+                return None
+            cid, ch = next(iter(free.items()))
+            self.assigned[player_id] = cid
+            self.save()
+            return ch
+
+    # ------------------------------------------------------------------
+    # Envelopes
+    # ------------------------------------------------------------------
+    def assign_envelopes(
+        self,
+        player_id: str,
+        count: int = 1,
+        game_state: GameState | None = None,
+    ) -> List[Dict[str, Any]]:
         """
-        Attribue `count` enveloppes non assignées depuis story_seed.envelopes (mode seed).
-        - Met à jour `assigned_player_id` sur chaque enveloppe.
-        - Legacy: renvoie [] (non pris en charge).
+        Assign `count` envelopes (seed mode only). Returns the list of envelopes just assigned.
+        Legacy mode is not supported for envelope distribution.
         """
         with self._lock:
-            if not self._use_seed():
+            if not self._use_seed(game_state):
                 return []
-            seed = self._seed() or {}
+
+            seed = self._seed(game_state) or {}
             envs: List[Dict[str, Any]] = seed.get("envelopes") or []
             given: List[Dict[str, Any]] = []
+
             for env in envs:
                 if not isinstance(env, dict):
                     continue
@@ -160,11 +171,12 @@ class CharacterService:
                 given.append(env)
                 if len(given) >= count:
                     break
+
             if given:
-                self.save()
+                self.save(game_state=game_state)
             return given
 
 
-# Instance globale (chargée au démarrage)
+# Global instance (loaded at import time)
 CHARACTERS = CharacterService()
 CHARACTERS.load()

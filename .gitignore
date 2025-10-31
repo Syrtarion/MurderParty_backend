@@ -56,3 +56,4 @@ uvicorn*.log
 # --- Docker / local data (optionnel)
 docker-data/
 local_data/
+\n# Sessions runtime\napp/data/sessions/*\n!app/data/sessions/default/\n!app/data/sessions/default/game_state.json\n!app/data/sessions/default/players.json\n!app/data/sessions/default/events.ndjson

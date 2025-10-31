@@ -1,58 +1,44 @@
 """
-Module routes/master_intro.py
-Rôle:
-- Génère l'introduction publique de la partie (narration d'ouverture),
-  tout en produisant/actualisant le "canon narratif" (culprit/lieu/arme/mobile).
-- Persiste dans `canon_narratif.json` via le service `narrative_engine`.
-
-Sécurité:
-- Router protégé par `mj_required` (réservé au maître du jeu).
-
-Flux:
-1) `generate_canon_and_intro(use_llm)` fabrique/charge le canon + intro.
-2) On log l'événement "intro_generated" dans GAME_STATE (trace runtime).
-3) On renvoie un texte d'intro public (sans spoilers) + chemins utiles.
-
-Notes:
-- `use_llm=True`: laisse le service décider s’il appelle le LLM (Ollama, etc.)
-- `public_path` → endpoint public à utiliser côté écran/tablette joueurs.
+Generate public introduction (and canon if missing) for a specific session.
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+
 from app.deps.auth import mj_required
 from app.services.narrative_engine import generate_canon_and_intro
-from app.services.game_state import GAME_STATE
+from app.services.session_store import DEFAULT_SESSION_ID, get_session_state
 
-router = APIRouter(
-    prefix="/master",
-    tags=["master"],
-    dependencies=[Depends(mj_required)]
-)
+
+router = APIRouter(prefix="/master", tags=["master"], dependencies=[Depends(mj_required)])
+
+
+def _normalize_session_id(session_id: str | None) -> str:
+    sid = (session_id or DEFAULT_SESSION_ID).strip()
+    return sid or DEFAULT_SESSION_ID
+
 
 @router.post("/intro")
-async def generate_intro(use_llm: bool = True):
+async def generate_intro(
+    use_llm: bool = True,
+    session_id: str | None = Query(default=None),
+):
     """
-    Déclenche la génération de l'introduction (et du canon si absent).
-    Retour:
-    - `intro_text`: narration publique non spoilante
-    - `public_path`: endpoint à consommer par le front public
-    - `canon_file`: fichier JSON persisté
+    Trigger canon + intro generation for the target session.
     """
+    sid = _normalize_session_id(session_id)
+    state = get_session_state(sid)
     try:
         data = generate_canon_and_intro(use_llm=use_llm)
-
-        # Journalisation côté runtime (diagnostic + audit MJ)
-        GAME_STATE.log_event("intro_generated", {
-            "location": data["location"],
-            "culprit_hint": "hidden"  # on ne divulgue rien ici
-        })
-
+        state.log_event(
+            "intro_generated",
+            {"location": data.get("location"), "culprit_hint": "hidden"},
+        )
+        state.state["canon"] = data
+        state.save()
         return {
             "ok": True,
             "intro_text": data.get("intro_narrative", ""),
             "public_path": "/public/intro",
-            "canon_file": "canon_narratif.json"
+            "canon_file": "canon_narratif.json",
         }
-
-    except Exception as e:
-        # Renvoyer une 500 lisible pour l'interface MJ
-        raise HTTPException(status_code=500, detail=f"Erreur lors de la génération de l’intro: {e}")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la génération de l'intro: {exc}") from exc

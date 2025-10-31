@@ -2,45 +2,57 @@
 Module routes/players.py
 Rôle:
 - Inscription simplifiée d’un joueur (sans mot de passe ici).
-- Attribution automatique d’un personnage si dispo (via `character_service`).
 
 Intégrations:
-- GAME_STATE.add_player(display_name): crée un player_id unique + enregistre.
-- CHARACTERS.assign_character(player_id): pick d’un rôle libre depuis story_seed.
-- Persistance d’infos utiles côté player (character_id, objectives, secrets…).
-
-Notes:
-- Cette route est parallélisable avec /auth/register (version avec mdp).
-- Log d’événement "player_join" systématique.
+- Multi-session: chaque inscription cible un `session_id` (direct ou via join_code).
+- Persistance des métadonnées minimales (player_id, display_name).
 """
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from app.services.game_state import GAME_STATE
-from app.services.character_service import CHARACTERS
+from app.services.session_store import (
+    DEFAULT_SESSION_ID,
+    find_session_id_by_join_code,
+    get_session_state,
+)
 
 router = APIRouter(prefix="/players", tags=["players"])
 
 class JoinPayload(BaseModel):
     display_name: str | None = None
 
+def _resolve_session_id(
+    session_id: str | None,
+    join_code: str | None,
+) -> str:
+    sid = (session_id or "").strip()
+    if sid:
+        return sid
+    resolved = find_session_id_by_join_code(join_code)
+    if join_code and not resolved:
+        raise HTTPException(status_code=404, detail="session_not_found")
+    return resolved or DEFAULT_SESSION_ID
+
 @router.post("/join")
-async def join(payload: JoinPayload):
-    """Inscription d'un joueur -> retourne un player_id unique + personnage attribué si disponible."""
-    player_id = GAME_STATE.add_player(payload.display_name)
+async def join(
+    payload: JoinPayload,
+    session_id: str | None = Query(default=None, description="Identifiant explicite de session"),
+    join_code: str | None = Query(default=None, description="Code de session partagé par le MJ"),
+):
+    """Inscription d'un joueur -> retourne un player_id unique (sans assigner de personnage)."""
+    sid = _resolve_session_id(session_id, join_code)
+    state = get_session_state(sid)
 
-    # Attribution automatique d'un rôle si disponible
-    character = CHARACTERS.assign_character(player_id)
+    player_id = state.add_player(payload.display_name)
 
-    # Persiste quelques infos côté player (profil minimal pour le front)
-    if character:
-        GAME_STATE.players[player_id]["character"] = character.get("name")
-        GAME_STATE.players[player_id]["character_id"] = character.get("id")
-        GAME_STATE.players[player_id]["objectives"] = character.get("objectives", [])
-        GAME_STATE.players[player_id]["secrets"] = character.get("secrets", [])
-        GAME_STATE.save()
+    state.save()
+    state.log_event(
+        "player_join_registered",
+        {
+            "player_id": player_id,
+            "display_name": payload.display_name,
+            "character": None,
+        },
+    )
 
-    # Trace runtime
-    GAME_STATE.log_event("player_join", {"player_id": player_id, "display_name": payload.display_name, "character": character.get("name") if character else None})
-
-    return {"player_id": player_id, "character": character}
+    return {"player_id": player_id, "character": None, "session_id": sid}

@@ -107,6 +107,7 @@ uvicorn app.main:app --reload --port 8000
 ## 🔐 Authentification
 
 - **MJ** : Bearer via `Authorization: Bearer <MJ_TOKEN>`  
+- **Sessions multiples** : ajouter `?session_id=<sid>` sur les routes MJ (défaut `default`).  
   Protège `master/*`, `party/*`, `session/*`, `minigames/*`, `trial/*`, etc.  
 - **Joueurs** : `/auth/register` (avec mdp) ou `/players/join` (rapide, sans mdp).
 
@@ -123,12 +124,16 @@ uvicorn app.main:app --reload --port 8000
 
 ### MJ (Back-office)
 - **Phases & plan** :  
-  `POST /party/start` → `POST /party/players_ready` → `POST /party/envelopes_done`  
+  `POST /party/start` (génère + diffuse `session_intro_ready`) → `POST /party/players_ready` → `POST /party/envelopes_done`  
   `POST /party/load_plan` → `POST /party/next_round`
 - **Rounds (moteur session)** :  
   `POST /session/start_next` → `POST /session/confirm_start` → `POST /session/result`
+- **Intro (tablette principale)** :  
+  `POST /session/{session_id}/intro/confirm` → marque l'intro comme lue, prépare le round #1 si besoin (`round_prepared`) puis notifie `start_minigame`.
 - **Mini-jeux** :  
   `POST /minigames/create` → `POST /minigames/submit_scores` → `POST /minigames/resolve`
+- **Préparation round** :  
+  `POST /session/{session_id}/round/{round_number}/prepare` → pré-génère narration, énigme et pack d'indices (stockés dans session_state + WS `round_prepared`).
 - **Narration / canon** :  
   `POST /master/intro` (génère intro + canon minimal), `POST /master/reveal_culprit`  
 - **Procès** :  
@@ -154,6 +159,10 @@ uvicorn app.main:app --reload --port 8000
 - Indice privé: `{"type":"clue","scope":"private","payload":{...}}`  
 - Mission secrète: `{"type":"secret_mission","mission":{...}}`  
 - Prompts UI: `{"type":"prompt","kind":"start_minigame","round_index":N}`  
+- Préparation round: `{"type":"event","kind":"round_prepared",...}` (MJ)  
+- Assets prêts: `{"type":"event","kind":"round_assets_ready",...}`
+- Préparation round: `{\"type\":\"event\",\"kind\":\"round_prepared\",...}` (MJ)  
+- Assets prêts: `{\"type\":\"event\",\"kind\":\"round_assets_ready\",...}`
 - Événements système: `{"type":"event","kind":"missions_ready","payload":{...}}`
 
 ---

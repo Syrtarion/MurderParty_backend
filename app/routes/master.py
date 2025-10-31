@@ -1,65 +1,71 @@
 """
-Module routes/master.py
-Rôle:
-- Endpoints MJ pour piloter la narration: choix du coupable, génération d’indices,
-  narration dynamique (mini-jeux, enveloppes, ambiance), timeline complète,
-  et verrouillage/déverrouillage des inscriptions.
-
-Sécurité:
-- Router protégé par `mj_required`.
-- Helper `_require_bearer` disponible mais non utilisé par les routes actuelles
-  (on s’appuie sur `mj_required`; `_require_bearer` garde une option de double check).
-
-Intégrations:
-- NARRATIVE: lecture/écriture du canon et timeline.
-- GAME_STATE: log d'événements + persist.
-- generate_indice / generate_dynamic_event: moteurs narratifs LLM.
-- WS: diffusion temps réel aux clients.
+Master routes (MJ scope).
+Provide narrative controls (canon, hints, envelopes, dynamic narration) with
+multi-session support. Every endpoint accepts an optional `session_id` query
+parameter; when omitted it falls back to the default session for backwards
+compatibility.
 """
-from fastapi import APIRouter, Depends, HTTPException, Header
-from pydantic import BaseModel, Field
+from __future__ import annotations
+
+import json
+import os
+from typing import Any, Dict, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Header, Query
 from fastapi.responses import JSONResponse
-from typing import Optional
-import json, os
+from pydantic import BaseModel, Field
 
 from app.deps.auth import mj_required
 from app.config.settings import settings
+from app.services.session_store import DEFAULT_SESSION_ID, get_session_state
 from app.services.narrative_core import NARRATIVE
-from app.services.game_state import GAME_STATE
 from app.services.llm_engine import generate_indice
-from app.services.ws_manager import WS, ws_send_type_to_player_safe
+from app.services.ws_manager import ws_send_type_to_player_safe, ws_broadcast_type_safe
 from app.services.narrative_dynamic import generate_dynamic_event
-
-# Enveloppes
 from app.services.envelopes import (
     distribute_envelopes_equitable,
     summary_for_mj,
     reset_envelope_assignments,
-    player_envelopes,         # helper joueur
-    assign_envelope_to_player # bonus
+    player_envelopes,
+    assign_envelope_to_player,
 )
+
 
 router = APIRouter(prefix="/master", tags=["master"], dependencies=[Depends(mj_required)])
 
 
-# --------------------------------------------------
-# Vérification du token MJ (sécurité API)
-# --------------------------------------------------
+def _normalize_session_id(session_id: Optional[str]) -> str:
+    sid = (session_id or DEFAULT_SESSION_ID).strip()
+    return sid or DEFAULT_SESSION_ID
+
+
 def _require_bearer(auth: str | None):
-    """
-    Vérifie un token Bearer MJ explicite.
-    Non requis si `mj_required` est déjà en place au niveau router.
-    """
+    """Optional explicit Bearer token guard."""
     if not auth or not auth.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing bearer token")
-    token = auth.split(" ", 1)[1]
-    if token != settings.MJ_TOKEN:
+    if auth.split(" ", 1)[1] != settings.MJ_TOKEN:
         raise HTTPException(status_code=403, detail="Invalid token")
 
 
-# --------------------------------------------------
-# Choix manuel du coupable
-# --------------------------------------------------
+def _session_players(state) -> list[str]:
+    return list(state.players.keys())
+
+
+def _broadcast_session_event(state, event_type: str, payload: Dict[str, Any], session_id: str) -> None:
+    """
+    Send an event to every registered player of the session.
+    Adds `session_id` to the payload for clients that rely on the global bus.
+    """
+    enriched = dict(payload)
+    enriched.setdefault("session_id", session_id)
+    for pid in _session_players(state):
+        ws_send_type_to_player_safe(pid, event_type, enriched)
+    ws_broadcast_type_safe(event_type, enriched)
+
+
+# ---------------------------------------------------------------------------
+# Canon manual override
+# ---------------------------------------------------------------------------
 class CulpritPayload(BaseModel):
     culprit: str
     weapon: str
@@ -68,49 +74,54 @@ class CulpritPayload(BaseModel):
 
 
 @router.post("/choose_culprit")
-async def choose_culprit(payload: CulpritPayload):
-    """
-    Verrouille manuellement le canon avec un coupable + (arme, lieu, mobile).
-    - Log l’événement "canon_locked" + broadcast WS aux clients.
-    """
+async def choose_culprit(
+    payload: CulpritPayload,
+    session_id: Optional[str] = Query(default=None, description="Identifiant de session MurderParty"),
+):
+    sid = _normalize_session_id(session_id)
+    state = get_session_state(sid)
+
     canon = NARRATIVE.choose_culprit(payload.culprit, payload.weapon, payload.location, payload.motive)
-    GAME_STATE.log_event("canon_locked", {k: canon.get(k) for k in ("culprit", "weapon", "location", "motive")})
-    await WS.broadcast({"type": "canon_locked", "payload": canon})
+    state.log_event(
+        "canon_locked",
+        {k: canon.get(k) for k in ("culprit", "weapon", "location", "motive")},
+    )
+    _broadcast_session_event(state, "canon_locked", {"canon": canon}, sid)
     return canon
 
 
-# --------------------------------------------------
-# Génération manuelle d’un indice ponctuel
-# --------------------------------------------------
+# ---------------------------------------------------------------------------
+# Hints generation
+# ---------------------------------------------------------------------------
 class IndicePayload(BaseModel):
     prompt: str = Field(..., description="Consigne spécifique pour l'indice")
     kind: str = Field("ambiguous", description="crucial | red_herrings | ambiguous | decor")
 
 
 @router.post("/generate_indice")
-async def generate_indice_route(payload: IndicePayload):
-    """
-    Génère un indice unique basé sur `prompt` + `kind`.
-    - Enrichit le canon via `NARRATIVE.append_clue`.
-    - Log l’événement et diffuse via WS.
-    """
-    user_prompt = "Donne uniquement l'indice, sans préambule. Limite à 1–2 phrases. " + payload.prompt
+async def generate_indice_route(
+    payload: IndicePayload,
+    session_id: Optional[str] = Query(default=None),
+):
+    sid = _normalize_session_id(session_id)
+    state = get_session_state(sid)
+
+    user_prompt = "Donne uniquement l'indice, sans préambule. Limite à 1-2 phrases. " + payload.prompt
     result = generate_indice(user_prompt, payload.kind)
     NARRATIVE.append_clue(payload.kind, {"text": result.get("text", ""), "kind": payload.kind})
-    GAME_STATE.log_event("clue_generated", {"kind": payload.kind, "text": result.get("text", "")})
-    await WS.broadcast({"type": "clue_generated", "payload": result})
+    state.log_event("clue_generated", {"kind": payload.kind, "text": result.get("text", "")})
+    _broadcast_session_event(state, "clue_generated", {"payload": result}, sid)
     return result
 
 
-# --------------------------------------------------
-# NARRATION DYNAMIQUE : mini-jeux, enveloppes, ambiance
-# --------------------------------------------------
-
+# ---------------------------------------------------------------------------
+# Dynamic narration helpers
+# ---------------------------------------------------------------------------
 class MiniGameResultPayload(BaseModel):
-    mode: str = "solo"  # "solo" ou "team"
+    mode: str = "solo"
     winners: list[str]
     losers: list[str]
-    mini_game: str | None = None
+    mini_game: Optional[str] = None
 
 
 class EnvelopeScanPayload(BaseModel):
@@ -120,226 +131,218 @@ class EnvelopeScanPayload(BaseModel):
 
 class StoryEventPayload(BaseModel):
     theme: str
-    context: dict | None = None
+    context: Optional[dict] = None
 
 
 @router.post("/narrate_mg_end")
-async def narrate_after_minigame(p: MiniGameResultPayload):
-    """Crée la narration et distribue les indices après un mini-jeu."""
-    try:
-        result = generate_dynamic_event("mini_game_end", p.dict())
-        return {"ok": True, "detail": result}
-    except Exception as e:
-        # La route renvoie une 500 "lisible" pour le front MJ
-        raise HTTPException(status_code=500, detail=str(e))
+async def narrate_after_minigame(
+    payload: MiniGameResultPayload,
+    session_id: Optional[str] = Query(default=None),
+):
+    sid = _normalize_session_id(session_id)
+    state = get_session_state(sid)
+
+    narrative = generate_dynamic_event(
+        theme="mini_game_end",
+        context={
+            "mode": payload.mode,
+            "winners": payload.winners,
+            "losers": payload.losers,
+            "mini_game": payload.mini_game,
+        },
+    )
+    state.log_event("mini_game_end", {"winners": payload.winners, "losers": payload.losers, "mini_game": payload.mini_game})
+    _broadcast_session_event(state, "narration", {"event": "mini_game_end", "text": narrative}, sid)
+    return {"ok": True, "narration": narrative}
 
 
-@router.post("/narrate_envelope")
-async def narrate_after_envelope(p: EnvelopeScanPayload):
-    """Génère la narration et l’indice global après le scan d’une enveloppe."""
-    try:
-        result = generate_dynamic_event("envelope_scanned", p.dict())
-        return {"ok": True, "detail": result}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+@router.post("/envelope_scan")
+async def envelope_scan(
+    payload: EnvelopeScanPayload,
+    session_id: Optional[str] = Query(default=None),
+):
+    sid = _normalize_session_id(session_id)
+    state = get_session_state(sid)
+
+    event = generate_dynamic_event("envelope_scan", {"player_id": payload.player_id, "envelope_id": payload.envelope_id})
+    state.log_event("envelope_scan", {"player_id": payload.player_id, "envelope_id": payload.envelope_id})
+    _broadcast_session_event(state, "narration", {"event": "envelope_scan", "text": event}, sid)
+    return {"ok": True, "narration": event}
 
 
-@router.post("/narrate_auto")
-async def narrate_auto_event(p: StoryEventPayload):
-    """Déclenche une narration automatique (transition, ambiance, etc.)."""
-    try:
-        result = generate_dynamic_event("narration_trigger", p.dict())
-        return {"ok": True, "detail": result}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+@router.post("/story_event")
+async def story_event(
+    payload: StoryEventPayload,
+    session_id: Optional[str] = Query(default=None),
+):
+    sid = _normalize_session_id(session_id)
+    state = get_session_state(sid)
 
-@router.get("/timeline", tags=["admin"])
-async def get_full_timeline():
-    """
-    Retourne l'intégralité du canon narratif (timeline complète).
-    Accessible via /master/timeline
-    """
-    canon = NARRATIVE.canon or {}
-    timeline = canon.get("timeline", [])
-    meta = {
-        "count": len(timeline),
-        "last_event": timeline[-1]["event"] if timeline else None,
-    }
-    return JSONResponse(content={"ok": True, "meta": meta, "timeline": timeline})
+    event = generate_dynamic_event(payload.theme, payload.context or {})
+    state.log_event("story_event", {"theme": payload.theme, "context": payload.context or {}})
+    _broadcast_session_event(state, "narration", {"event": payload.theme, "text": event}, sid)
+    return {"ok": True, "narration": event}
 
 
-# --------------------------------------------------
-# Verrouiller / Déverrouiller la phase JOIN
-# --------------------------------------------------
+# ---------------------------------------------------------------------------
+# Envelopes management
+# ---------------------------------------------------------------------------
 @router.post("/lock_join")
-async def lock_join():
-    """
-    Verrouille la phase d'inscription (empêche /auth/register) ET lance la distribution équitable.
-    - Met à jour la phase -> ENVELOPES_DISTRIBUTION (les enveloppes doivent être cachées ensuite).
-    - Distribution: lit d’abord le GAME_STATE; si aucune enveloppe, lit le story_seed.json (disque).
-    - Log + persist.
-    - Diffuse en WS :
-        • events globaux: 'join_locked', 'phase_change', 'envelopes_update'
-        • + ciblé: 'envelopes_update' avec la liste {num,id} pour CHAQUE joueur.
-    """
+async def lock_join(session_id: Optional[str] = Query(default=None)):
+    sid = _normalize_session_id(session_id)
+    state = get_session_state(sid)
+
     try:
-        # 1) verrou + phase
-        GAME_STATE.state["join_locked"] = True
-        GAME_STATE.state["phase_label"] = "ENVELOPES_DISTRIBUTION"
-        GAME_STATE.log_event("join_locked", {})
-        GAME_STATE.log_event("phase_change", {"phase": "ENVELOPES_DISTRIBUTION"})
+        state.state["join_locked"] = True
+        state.state["phase_label"] = "ENVELOPES_DISTRIBUTION"
+        state.log_event("join_locked", {})
+        state.log_event("phase_change", {"phase": "ENVELOPES_DISTRIBUTION"})
+        distribution = distribute_envelopes_equitable(game_state=state)
+        state.log_event("envelopes_distributed", distribution)
+        state.save()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Cannot lock join: {exc}") from exc
 
-        # 2) distribution (équitable & idempotent, vue joueur = num/id uniquement)
-        distribution_summary = distribute_envelopes_equitable()
-        GAME_STATE.log_event("envelopes_distributed", distribution_summary)
-
-        # 3) persist
-        GAME_STATE.save()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Cannot lock/distribute: {e}")
-
-    # 4) broadcast temps réel (global)
-    await WS.broadcast_type("event", {"kind": "join_locked"})
-    await WS.broadcast_type("event", {"kind": "phase_change", "phase": "ENVELOPES_DISTRIBUTION"})
-    await WS.broadcast_type("event", {"kind": "envelopes_update"})
-
-    # 5) ciblé par joueur : liste complète des enveloppes (num,id) -> MAJ instantanée côté front joueur
-    try:
-        for pid in list(GAME_STATE.players.keys()):
-            envs = player_envelopes(pid)
-            ws_send_type_to_player_safe(pid, "event", {
+    _broadcast_session_event(state, "event", {"kind": "join_locked"}, sid)
+    for pid in _session_players(state):
+        ws_send_type_to_player_safe(
+            pid,
+            "event",
+            {
                 "kind": "envelopes_update",
                 "player_id": pid,
-                "envelopes": envs,
-            })
-    except Exception as e:
-        # Ne bloque pas la réponse HTTP — log
-        print(f"[WS] envelopes_update ciblé: {e}")
+                "envelopes": player_envelopes(pid, game_state=state),
+                "session_id": sid,
+            },
+        )
 
     return {
         "ok": True,
         "join_locked": True,
         "phase": "ENVELOPES_DISTRIBUTION",
-        "distribution": distribution_summary,
+        "distribution": distribution,
     }
 
 
 @router.post("/unlock_join")
-async def unlock_join():
-    """
-    Rouvre la phase d'inscription (sans changer la phase courante).
-    - Log + persist + broadcast WS d’un event 'join_unlocked'.
-    """
+async def unlock_join(session_id: Optional[str] = Query(default=None)):
+    sid = _normalize_session_id(session_id)
+    state = get_session_state(sid)
+
     try:
-        GAME_STATE.state["join_locked"] = False
-        GAME_STATE.log_event("join_unlocked", {})
-        GAME_STATE.save()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Cannot unlock join: {e}")
-    await WS.broadcast_type("event", {"kind": "join_unlocked"})
+        state.state["join_locked"] = False
+        state.log_event("join_unlocked", {})
+        state.save()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Cannot unlock join: {exc}") from exc
+
+    _broadcast_session_event(state, "event", {"kind": "join_unlocked"}, sid)
     return {"ok": True, "join_locked": False}
 
 
-# --------------------------------------------------
-# Diagnostics & maintenance enveloppes / seed
-# --------------------------------------------------
 @router.get("/envelopes/summary")
-async def envelopes_summary(include_hints: bool = False):
-    """
-    Vue MJ: résumé enveloppes. PRIORITÉ: GAME_STATE (mémoire). Si rien en mémoire,
-    retombe sur le story_seed du disque (géré dans summary_for_mj()).
-    """
-    return summary_for_mj(include_hints=include_hints)
+async def envelopes_summary(
+    include_hints: bool = False,
+    session_id: Optional[str] = Query(default=None),
+):
+    sid = _normalize_session_id(session_id)
+    state = get_session_state(sid)
+    return summary_for_mj(include_hints=include_hints, game_state=state)
+
 
 @router.post("/envelopes/reset")
-async def envelopes_reset():
-    """
-    Réinitialise assigned_player_id=None pour TOUTES les enveloppes du seed en mémoire,
-    resynchronise la vue joueur, sauvegarde + notifie les fronts.
-    """
-    res = reset_envelope_assignments()
-    await WS.broadcast_type("event", {"kind": "envelopes_update"})
+async def envelopes_reset(session_id: Optional[str] = Query(default=None)):
+    sid = _normalize_session_id(session_id)
+    state = get_session_state(sid)
+
+    res = reset_envelope_assignments(game_state=state)
+    _broadcast_session_event(state, "event", {"kind": "envelopes_update"}, sid)
     return res
 
+
 def _seed_default_path() -> str:
-    """
-    FIX: fallback = app/data/story_seed.json
-    Essaie d’abord settings.STORY_SEED_PATH si dispo (pour override via .env),
-    sinon utilise le chemin par défaut unique du repo: app/data/story_seed.json.
-    """
     try:
         if getattr(settings, "STORY_SEED_PATH", None):
             return str(settings.STORY_SEED_PATH)
     except Exception:
         pass
-    # FIX: utiliser un chemin robuste basé sur ce fichier pour atteindre app/data/...
     from pathlib import Path
-    app_dir = Path(__file__).resolve().parents[1]  # -> .../app/
-    return str((app_dir / "data" / "story_seed.json").resolve())
+
+    return str((Path(__file__).resolve().parents[1] / "data" / "story_seed.json").resolve())
+
 
 @router.post("/seed/reload")
-async def seed_reload(path: Optional[str] = None):
-    """
-    Recharge le story_seed depuis le disque dans GAME_STATE.state["story_seed"], sans redémarrer.
-    - path optionnel: si omis, utilise _seed_default_path()
-    """
+async def seed_reload(
+    path: Optional[str] = None,
+    session_id: Optional[str] = Query(default=None),
+):
+    sid = _normalize_session_id(session_id)
+    state = get_session_state(sid)
+
     seed_path = path or _seed_default_path()
     if not os.path.exists(seed_path):
         raise HTTPException(404, f"Seed file not found: {seed_path}")
-    try:
-        with open(seed_path, "r", encoding="utf-8") as f:
-            seed = json.load(f)
-        GAME_STATE.state["story_seed"] = seed
-        GAME_STATE.log_event("seed_reloaded", {"path": seed_path, "envelopes_count": len(seed.get("envelopes", []))})
-        GAME_STATE.save()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Seed reload failed: {e}")
 
-    await WS.broadcast_type("event", {"kind": "seed_reloaded"})
+    try:
+        with open(seed_path, "r", encoding="utf-8") as handle:
+            seed = json.load(handle)
+        state.state["story_seed"] = seed
+        state.log_event(
+            "seed_reloaded",
+            {"path": seed_path, "envelopes_count": len(seed.get("envelopes", []))},
+        )
+        state.save()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Seed reload failed: {exc}") from exc
+
+    _broadcast_session_event(state, "event", {"kind": "seed_reloaded"}, sid)
     return {"ok": True, "path": seed_path, "envelopes_count": len(seed.get("envelopes", []))}
 
-# --------------------------------------------------
-# BONUS — Réassigner une enveloppe à un joueur (live)
-# --------------------------------------------------
+
 class AssignEnvelopePayload(BaseModel):
     envelope_id: str | int
     player_id: str
 
+
 @router.post("/envelopes/assign")
-async def envelopes_assign(p: AssignEnvelopePayload):
-    """
-    BONUS MJ:
-    (Ré)assigne une enveloppe à un joueur.
-    - Met à jour le seed en mémoire
-    - Resynchronise la vue joueur
-    - Notifie EN LIVE:
-        • nouveau propriétaire => event 'envelopes_update' avec sa liste
-        • ancien propriétaire (si existait) => event 'envelopes_update' avec SA nouvelle liste
-    """
-    res = assign_envelope_to_player(p.envelope_id, p.player_id)
+async def envelopes_assign(
+    payload: AssignEnvelopePayload,
+    session_id: Optional[str] = Query(default=None),
+):
+    sid = _normalize_session_id(session_id)
+    state = get_session_state(sid)
+
+    res = assign_envelope_to_player(payload.envelope_id, payload.player_id, game_state=state)
     if not res.get("ok"):
         raise HTTPException(404, detail="envelope_not_found")
 
-    # notifications ciblées
     try:
-        # nouveau propriétaire
-        new_envs = player_envelopes(p.player_id)
-        ws_send_type_to_player_safe(p.player_id, "event", {
-            "kind": "envelopes_update",
-            "player_id": p.player_id,
-            "envelopes": new_envs,
-        })
-
-        # ancien propriétaire (si différent et existait)
-        prev_owner = res.get("previous_owner")
-        if prev_owner and prev_owner != p.player_id:
-            prev_envs = player_envelopes(prev_owner)
-            ws_send_type_to_player_safe(prev_owner, "event", {
+        new_envs = player_envelopes(payload.player_id, game_state=state)
+        ws_send_type_to_player_safe(
+            payload.player_id,
+            "event",
+            {
                 "kind": "envelopes_update",
-                "player_id": prev_owner,
-                "envelopes": prev_envs,
-            })
-    except Exception as e:
-        print(f"[WS] envelopes_assign notify error: {e}")
+                "player_id": payload.player_id,
+                "envelopes": new_envs,
+                "session_id": sid,
+            },
+        )
+
+        prev_owner = res.get("previous_owner")
+        if prev_owner and prev_owner != payload.player_id:
+            prev_envs = player_envelopes(prev_owner, game_state=state)
+            ws_send_type_to_player_safe(
+                prev_owner,
+                "event",
+                {
+                    "kind": "envelopes_update",
+                    "player_id": prev_owner,
+                    "envelopes": prev_envs,
+                    "session_id": sid,
+                },
+            )
+    except Exception as err:
+        print(f"[WS] envelopes_assign notify error: {err}")
 
     return res

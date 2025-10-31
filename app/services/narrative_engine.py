@@ -49,9 +49,13 @@ def generate_random_canon(seed_data: dict) -> dict:
 
     # Choix aléatoires dans les ensembles proposés
     culprit = random.choice(characters)
-    weapon = random.choice(constraints.get("possible_weapons", []))
-    location = random.choice(constraints.get("possible_locations", []))
-    motive = random.choice(constraints.get("possible_motives", []))
+    possible_weapons = constraints.get("possible_weapons") or ["Un chandelier"]
+    possible_locations = constraints.get("possible_locations") or ["le salon"]
+    possible_motives = constraints.get("possible_motives") or ["jalousie"]
+
+    weapon = random.choice(possible_weapons)
+    location = random.choice(possible_locations)
+    motive = random.choice(possible_motives)
 
     canon = {
         "culprit": culprit["name"],

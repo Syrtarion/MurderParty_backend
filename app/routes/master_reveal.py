@@ -1,75 +1,61 @@
 """
-Module routes/master_reveal.py
-Rôle:
-- Révélation du coupable (déjà défini dans le canon) + distribution des missions.
-- Notifie chaque joueur par WS de sa mission secrète.
-- Diffuse un signal global "missions_ready" (affichage/état front).
-
-Sécurité:
-- Accès MJ uniquement (`mj_required`).
-
-Flux:
-1) Lire le canon (NARRATIVE.canon) et récupérer `culprit_player_id`.
-2) Validation présence du joueur désigné (toujours en jeu).
-3) Marquer `is_culprit=True` côté GAME_STATE.
-4) `MISSION_SVC.assign_missions()` : attribution unique/équitable.
-5) Envoi WS individuel (missions secrètes), puis broadcast global.
-6) Log des événements majeurs.
+Reveal culprit and dispatch secret missions for a given session.
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.deps.auth import mj_required
-from app.services.game_state import GAME_STATE
+from app.services.session_store import DEFAULT_SESSION_ID, get_session_state
 from app.services.narrative_core import NARRATIVE
 from app.services.mission_service import MISSION_SVC
-from app.services.ws_manager import ws_send_to_player_safe, ws_broadcast_safe
+from app.services.ws_manager import ws_send_to_player_safe
 
-router = APIRouter(
-    prefix="/master",
-    tags=["master"],
-    dependencies=[Depends(mj_required)]
-)
+
+router = APIRouter(prefix="/master", tags=["master"], dependencies=[Depends(mj_required)])
+
+
+def _normalize_session_id(session_id: str | None) -> str:
+    sid = (session_id or DEFAULT_SESSION_ID).strip()
+    return sid or DEFAULT_SESSION_ID
+
 
 @router.post("/reveal_culprit")
-async def reveal_culprit():
-    """
-    Révèle le coupable et assigne les missions à tous les joueurs.
-    - Notifie chaque joueur via WS (message "secret_mission").
-    - Diffuse "missions_ready" en broadcast.
-    """
-    canon = NARRATIVE.canon
-    culprit_pid = canon.get("culprit_player_id")
+async def reveal_culprit(session_id: str | None = Query(default=None)):
+    sid = _normalize_session_id(session_id)
+    state = get_session_state(sid)
+
+    canon = state.state.get("canon") or NARRATIVE.canon
+    culprit_pid = canon.get("culprit_player_id") if isinstance(canon, dict) else None
     if not culprit_pid:
         raise HTTPException(status_code=400, detail="Aucun coupable défini dans le canon narratif.")
-
-    if culprit_pid not in GAME_STATE.players:
+    if culprit_pid not in state.players:
         raise HTTPException(status_code=400, detail="Le joueur coupable n'est pas présent dans la partie.")
 
-    # Marquer l'état du joueur désigné
-    GAME_STATE.players[culprit_pid]["is_culprit"] = True
-
-    # Attribution des missions depuis le pool (story_seed.json)
+    state.players[culprit_pid]["is_culprit"] = True
     try:
-        assigned = MISSION_SVC.assign_missions()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur d'attribution des missions : {e}")
+        assigned = MISSION_SVC.assign_missions(game_state=state)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Erreur d'attribution des missions : {exc}") from exc
 
-    # Envoi des missions à chaque joueur
     for pid, mission in assigned.items():
-        ws_send_to_player_safe(pid, {"type": "secret_mission", "mission": mission})
+        ws_send_to_player_safe(pid, {"type": "secret_mission", "mission": mission, "session_id": sid})
 
-    # Log et diffusion globales
-    GAME_STATE.log_event("culprit_revealed", {"culprit_player_id": culprit_pid})
-    ws_broadcast_safe({
-        "type": "event",
-        "kind": "missions_ready",
-        "payload": {"count": len(assigned)}
-    })
-    GAME_STATE.log_event("missions_ready", {"count": len(assigned)})
+    state.log_event("culprit_revealed", {"culprit_player_id": culprit_pid})
+    state.log_event("missions_ready", {"count": len(assigned)})
 
+    for pid in state.players.keys():
+        ws_send_to_player_safe(
+            pid,
+            {
+                "type": "event",
+                "kind": "missions_ready",
+                "payload": {"count": len(assigned), "session_id": sid},
+            },
+        )
+
+    culprit_entry = state.players[culprit_pid]
     return {
         "ok": True,
         "culprit_player_id": culprit_pid,
-        "culprit_name": GAME_STATE.players[culprit_pid].get("character") or GAME_STATE.players[culprit_pid].get("display_name"),
-        "missions_assigned_count": len(assigned)
+        "culprit_name": culprit_entry.get("character") or culprit_entry.get("display_name"),
+        "missions_assigned_count": len(assigned),
     }

@@ -1,19 +1,20 @@
 """
 Service: game_state.py
-Rôle:
-- Stocker l'état global de la partie (players, state, events) et le persister.
-- Fournir un singleton `GAME_STATE` partagé par l’ensemble du backend.
+Rôle :
+- Stocker l'état de la partie pour une session donnée (players, state, events) et le persister.
+- Fournir un singleton `GAME_STATE` partagé par défaut (session `"default"`), avec gestion
+  multi-sessions via le répertoire `sessions/<session_id>/`.
 
-Fichiers:
-- players.json   : dictionnaire {player_id: {...}}
-- game_state.json: clés de pilotage (phase, flags, story_seed éventuel…)
-- events.json    : liste chronologique d'événements (trace globale)
+Stockage (par session) :
+- `sessions/<session_id>/players.json`
+- `sessions/<session_id>/game_state.json`
+- `sessions/<session_id>/events.ndjson` (journal append-only)
 
-Notes:
-- RLock interne pour protéger la consistance lors d'appels concurrents.
-- `register_event()` écrit sur disque + log en mémoire + print console (debug).
+Compatibilité :
+- À la première lecture, si aucun fichier session n'existe encore, le service recharge les anciens
+  fichiers globaux (`players.json`, `game_state.json`, `events.json`) puis migre automatiquement
+  vers la nouvelle arborescence.
 """
-# app/services/game_state.py
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
@@ -26,47 +27,138 @@ from app.config.settings import settings
 from .io_utils import read_json, write_json
 
 DATA_DIR = Path(settings.DATA_DIR)
-PLAYERS_PATH = DATA_DIR / "players.json"
-STATE_PATH = DATA_DIR / "game_state.json"
-EVENTS_PATH = DATA_DIR / "events.json"
+LEGACY_PLAYERS_PATH = DATA_DIR / "players.json"
+LEGACY_STATE_PATH = DATA_DIR / "game_state.json"
+LEGACY_EVENTS_PATH = DATA_DIR / "events.json"
+SESSIONS_DIR = DATA_DIR / "sessions"
+DEFAULT_SESSION_ID = "default"
+PLAYERS_FILENAME = "players.json"
+STATE_FILENAME = "game_state.json"
+EVENTS_FILENAME = "events.ndjson"
 MAX_AUDIT_EVENTS = 2000
+
+
+def _default_state() -> Dict[str, Any]:
+    return {
+        "phase": 1,
+        "started": False,
+        "campaign_id": None,
+        "last_awards": {},
+        "phase_label": "WAITING_START",
+        "join_locked": False,
+        "session": {},
+        "join_code": None,
+        "hints_history": [],
+        "killer_actions": {"destroy_used": 0},
+    }
+
+
+def _ensure_sessions_dir() -> None:
+    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _read_events_ndjson(path: Path) -> list[Dict[str, Any]]:
+    if not path.exists():
+        return []
+    events: list[Dict[str, Any]] = []
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    events.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except Exception:
+        return []
+    return events
+
+
+def _write_events_ndjson(path: Path, events: Iterable[Dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as fh:
+        for event in events:
+            fh.write(json.dumps(event, ensure_ascii=False))
+            fh.write("\n")
 
 
 @dataclass
 class GameState:
+    session_id: str = field(default=DEFAULT_SESSION_ID)
     _lock: RLock = field(default_factory=RLock, init=False, repr=False)
     players: Dict[str, Dict[str, Any]] = field(default_factory=dict)
-    state: Dict[str, Any] = field(default_factory=lambda: {
-        "phase": 1,
-        "started": False,
-        "campaign_id": None,
-        "last_awards": {}
-    })
+    state: Dict[str, Any] = field(default_factory=_default_state)
     events: list[Dict[str, Any]] = field(default_factory=list)
 
     # -----------------------------
-    # Gestion fichiers de session
+    # Gestion session / chemins
     # -----------------------------
-    def load(self) -> None:
+    def _session_dir(self) -> Path:
+        _ensure_sessions_dir()
+        base = SESSIONS_DIR / self.session_id
+        base.mkdir(parents=True, exist_ok=True)
+        return base
+
+    def _players_path(self) -> Path:
+        return self._session_dir() / PLAYERS_FILENAME
+
+    def _state_path(self) -> Path:
+        return self._session_dir() / STATE_FILENAME
+
+    def _events_path(self) -> Path:
+        return self._session_dir() / EVENTS_FILENAME
+
+    # -----------------------------
+    # Chargement / Sauvegarde
+    # -----------------------------
+    def load(self, session_id: Optional[str] = None) -> None:
         """Charge players/state/events depuis le disque (ou valeurs par défaut)."""
         with self._lock:
-            self.players = read_json(PLAYERS_PATH) or {}
-            self.state = read_json(STATE_PATH) or {
-                "phase": 1,
-                "started": False,
-                "campaign_id": None,
-                "last_awards": {}
-            }
-            self.events = read_json(EVENTS_PATH) or []
+            if session_id:
+                self.session_id = session_id
+
+            players = read_json(self._players_path())
+            state = read_json(self._state_path())
+            events = _read_events_ndjson(self._events_path())
+
+            migrated = False
+            if not players and not state and not events and self.session_id == DEFAULT_SESSION_ID:
+                players = read_json(LEGACY_PLAYERS_PATH)
+                state = read_json(LEGACY_STATE_PATH)
+                events = self._read_legacy_events()
+                migrated = bool(players or state or events)
+
+            self.players = players or {}
+            self.state = state or _default_state()
+            self.events = events or []
             self._normalize_events()
 
+            if migrated:
+                self.save()
+
     def save(self) -> None:
-        """Persiste players/state/events sur disque (synchronisation simple)."""
+        """Persiste players/state/events sur disque."""
         with self._lock:
             self._trim_events()
-            write_json(PLAYERS_PATH, self.players)
-            write_json(STATE_PATH, self.state)
-            write_json(EVENTS_PATH, self.events)
+            write_json(self._players_path(), self.players)
+            write_json(self._state_path(), self.state)
+            _write_events_ndjson(self._events_path(), self.events)
+
+    def reset(self) -> None:
+        """Reinitialise l'etat (players/state/events) sans charger le disque."""
+        with self._lock:
+            self.players = {}
+            self.state = _default_state()
+            self.events = []
+
+    # -----------------------------
+    # Sessions
+    # -----------------------------
+    def use_session(self, session_id: str) -> None:
+        """Change de session et recharge les données correspondantes."""
+        self.load(session_id=session_id)
 
     # -----------------------------
     # Gestion des joueurs
@@ -116,7 +208,7 @@ class GameState:
         self.events = normalized
         self._trim_events()
 
-    def _log_event_nolock(self, kind: str, payload: Dict[str, Any], scope: str = "system") -> None:
+    def _log_event_nolock(self, kind: str, payload: Dict[str, Any], scope: str = "system") -> Dict[str, Any]:
         """Enregistre un événement interne (sans verrou) – utilitaire privé."""
         if not isinstance(self.events, list):
             self.events = []
@@ -125,16 +217,18 @@ class GameState:
             "kind": kind,
             "scope": scope,
             "payload": payload,
-            "ts": time.time()
+            "ts": time.time(),
         }
         self.events.append(entry)
         self._trim_events()
+        return entry
 
-    def log_event(self, kind: str, payload: Dict[str, Any], scope: str = "system") -> None:
+    def log_event(self, kind: str, payload: Dict[str, Any], scope: str = "system") -> Dict[str, Any]:
         """Enregistre un événement avec verrou (thread-safe) puis sauvegarde."""
         with self._lock:
-            self._log_event_nolock(kind, payload, scope)
+            entry = self._log_event_nolock(kind, payload, scope)
             self.save()
+            return entry
 
     def log_ws_dispatch(
         self,
@@ -149,21 +243,28 @@ class GameState:
         - `channel`: étiquette libre pour faciliter le filtrage (ex: "broadcast", "player").
         """
         target_list = list(targets) if targets else []
-        entry = {
+        entry_payload = {
             "event_type": event_type,
             "payload": payload,
             "targets": target_list,
             "channel": channel,
         }
-        # scope encode la nature du dispatch pour faciliter la recherche ultérieure.
         scope_label = f"ws:{channel}"
-        self.log_event("ws_dispatch", entry, scope=scope_label)
+        self.log_event("ws_dispatch", entry_payload, scope=scope_label)
 
     def events_snapshot(self) -> list[Dict[str, Any]]:
         """Retourne une copie immuable des événements courants."""
         with self._lock:
             return [event.copy() for event in self.events]
 
+    def _read_legacy_events(self) -> list[Dict[str, Any]]:
+        try:
+            legacy = read_json(LEGACY_EVENTS_PATH)
+            if isinstance(legacy, list):
+                return legacy
+        except Exception:
+            pass
+        return []
 
 # -----------------------------
 # Outils externes
@@ -173,14 +274,15 @@ def save_json(path: Path, data: dict) -> None:
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        raise RuntimeError(f"Erreur lors de la sauvegarde JSON : {e}")
+    except Exception as exc:
+        raise RuntimeError(f"Erreur lors de la sauvegarde JSON : {exc}")
 
 
 # -----------------------------
 # Singleton global
 # -----------------------------
-_instance = None
+_instance: Optional[GameState] = None
+
 
 def get_game_state() -> GameState:
     """Garantit une unique instance `GameState` pour tout le backend (lazy-load)."""
@@ -197,34 +299,17 @@ GAME_STATE = get_game_state()
 # -----------------------------
 # Helper d’enregistrement global
 # -----------------------------
-def register_event(kind: str, details: dict | None = None, scope: str = "system") -> dict:
+def register_event(
+    kind: str,
+    details: dict | None = None,
+    scope: str = "system",
+    game_state: GameState | None = None,
+) -> Dict[str, Any]:
     """
-    Helper centralisé pour enregistrer un événement dans app/data/events.json
-    + Log en mémoire via GAME_STATE.log_event pour un accès immédiat aux endpoints.
+    Helper centralisé pour enregistrer un événement dans le journal courant.
+    Renvoie l'événement consigné.
     """
-    event = {
-        "id": str(uuid4()),
-        "kind": kind,
-        "scope": scope,
-        "payload": details or {},
-        "ts": time.time()
-    }
-
-    # Chargement et écriture directe du fichier JSON (append)
-    try:
-        if EVENTS_PATH.exists():
-            existing = json.loads(EVENTS_PATH.read_text(encoding="utf-8"))
-        else:
-            existing = []
-    except Exception:
-        existing = []
-
-    existing.append(event)
-    EVENTS_PATH.write_text(json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
-
-    # Log console pour debug (traçabilité)
-    print(f"[EVENT REGISTERED] {kind} (scope={scope}) → {details or {}}")
-
-    # Ajout en mémoire (events du runtime) pour lecture immédiate
-    GAME_STATE.log_event(kind, details or {}, scope)
-    return event
+    target = game_state or GAME_STATE
+    entry = target.log_event(kind, details or {}, scope)
+    print(f"[EVENT REGISTERED] {kind} (scope={scope}) -> {details or {}}")
+    return entry
