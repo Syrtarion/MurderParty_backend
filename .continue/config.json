@@ -1,0 +1,60 @@
+{
+  "models": [
+    {
+      "title": "Agent — Qwen2.5 Coder 32B (Local)",
+      "provider": "ollama",
+      "model": "qwen2.5-coder:32b-instruct",
+      "completionParams": { "temperature": 0.2, "num_ctx": 16384 },
+      "systemMessage": "Tu es un agent de dev style Codex. Processus strict: Objectif → Plan court (≤7 étapes) → (si validé) Commandes (avec confirmation) → Diffs minimaux → Tests → README/CHANGELOG. AVANT TOUT: AUDITER le repo et DÉDUIRE le style existant (formatters/linters/types/tests/CI/structure). Écrire .continue/project_style_profile.json + .continue/coherence_rules.md. Proposer uniquement des configs MANQUANTES qui REFLÈTENT ce style (aucune préférence nouvelle). Jamais de reformat global ni de renommage public sans accord. Toujours expliquer avant d'éditer. Types/tests obligatoires si outils présents."
+    },
+    {
+      "title": "Planner — DeepSeek R1 14B (Local)",
+      "provider": "ollama",
+      "model": "deepseek-r1:14b",
+      "completionParams": { "temperature": 0.2, "num_ctx": 16384 },
+      "systemMessage": "Rôle: Planner. Produis des plans d’implémentation très structurés (étapes courtes, critères d’acceptation, risques, fichiers ciblés, tests), sans éditer de code ni exécuter de commandes."
+    }
+  ],
+  "tabAutocompleteModel": {
+    "provider": "ollama",
+    "model": "qwen2.5-coder:14b-instruct",
+    "completionParams": { "temperature": 0.2, "num_ctx": 8192 }
+  },
+  "experimental": {
+    "allowFileEdits": true,
+    "allowCommands": true
+  },
+  "allowAutomaticTask": true,
+  "rules": [
+    "Lire package.json, tsconfig.json, .eslintrc*, .prettierrc*, pyproject.toml/ruff.toml/mypy.ini, .editorconfig, README, workflows CI.",
+    "Ne pas introduire d’outils nouveaux sans justification claire.",
+    "Pas de reformat global; pas de renommage public sans accord.",
+    "Limiter les commandes au dossier du projet et exiger confirmation."
+  ],
+  "customCommands": [
+    {
+      "name": "audit_style",
+      "prompt": "Scanne le repo (lecture seule) et génère .continue/project_style_profile.json (frameworks, formatters/linters, strictesse TS/Python, tests, scripts/CI, conventions de dossiers) + .continue/coherence_rules.md (règles humaines). Ne modifie rien d’autre."
+    },
+    {
+      "name": "propose_minimal_configs",
+      "prompt": "À partir du profil, PROPOSE des diffs MINIMAUX pour créer uniquement les fichiers de config MANQUANTS qui reflètent EXACTEMENT le style détecté (.editorconfig, .prettierrc, .eslintrc, sections ruff/black/mypy, tsconfig, jobs CI). Pas de reformat global. Explique l’impact (no-op runtime)."
+    },
+    {
+      "name": "apply_minimal_configs",
+      "prompt": "Applique les diffs validés sans reformat global ni renommage public. Si des scripts CI manquent pour vérifier le style existant (lint/fmt/typecheck/test), propose l’ajout minimal correspondant."
+    },
+    {
+      "name": "plan",
+      "prompt": "Avec le Planner (DeepSeek R1), propose un plan en ≤7 étapes (commit atomique/étape): objectifs, fichiers ciblés, tests à créer/MAJ, risques, critères d’acceptation. N’applique rien."
+    },
+    {
+      "name": "apply",
+      "prompt": "Avec l’Agent (Qwen 32B), applique L’ÉTAPE EN COURS en respectant STRICTEMENT le profil et les règles: diffs minimalistes, pas de renommages publics, ajouter/MAJ tests (pytest/vitest) et README si nécessaire. Propose les commandes shell (lint/typecheck/test/build) et ATTENDS validation."
+    },
+    {
+      "name": "build_check",
+      "prompt": "Propose la séquence minimale de commandes pour vérifier build et tests (npm/uvicorn/pytest/tsc/etc.) avec une brève explication. Attends validation avant exécution."
+    }
+  ]
+}

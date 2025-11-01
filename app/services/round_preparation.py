@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from app.services.game_state import GameState
 from app.services.llm_engine import LLMServiceError, run_llm
-from app.services.story_seed import load_story_seed_dict, StorySeedError
+from app.services.story_seed import StorySeedError, load_story_seed_for_state
 
 ROUND_KIND_LLM_ENIGME = "llm_enigme"
 
@@ -142,7 +142,7 @@ def prepare_round_assets(game_state: GameState, round_index: int, *, use_llm: bo
         raise ValueError("round_index must be >= 1")
 
     try:
-        seed = load_story_seed_dict()
+        seed = load_story_seed_for_state(game_state)
     except StorySeedError as exc:
         raise RuntimeError(str(exc)) from exc
 

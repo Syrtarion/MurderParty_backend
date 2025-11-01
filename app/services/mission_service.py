@@ -5,7 +5,6 @@ Assigns secret missions to players depending on their role (culprit vs others).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
 from threading import RLock
 from typing import Any, Dict, Optional
 import json
@@ -14,23 +13,17 @@ import random
 from app.config.settings import settings
 from app.services.game_state import GAME_STATE, GameState
 from app.services.llm_engine import run_llm
-
-
-DATA_DIR = Path(settings.DATA_DIR)
-SEED_PATH = DATA_DIR / "story_seed.json"
+from app.services.story_seed import load_story_seed_dict, StorySeedError
 
 DEFAULT_CULPRIT_POINTS = 50
 DEFAULT_OTHER_POINTS = 10
 
 
-def load_seed() -> dict:
-    if SEED_PATH.exists():
-        try:
-            with open(SEED_PATH, "r", encoding="utf-8") as handle:
-                return json.load(handle)
-        except Exception:
-            return {}
-    return {}
+def load_seed(campaign: Optional[str] = None) -> dict:
+    try:
+        return load_story_seed_dict(campaign=campaign)
+    except StorySeedError:
+        return {}
 
 
 @dataclass
@@ -54,7 +47,10 @@ class MissionService:
             canon = state.state.get("canon") or {}
             culprit_pid = canon.get("culprit_player_id")
 
-            seed = load_seed()
+            campaign = state.state.get("campaign_id") or settings.DEFAULT_CAMPAIGN
+            seed = load_seed(campaign)
+            if seed and not state.state.get("story_seed"):
+                state.state["story_seed"] = seed
             pool_culprit = list(seed.get("culprit_missions", []))
             pool_others = list(seed.get("missions", []))
 

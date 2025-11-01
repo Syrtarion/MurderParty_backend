@@ -31,7 +31,7 @@ from app.config.settings import settings
 from app.services.game_state import GAME_STATE, GameState
 from app.services.ws_manager import WS, ws_broadcast_type_safe
 from app.services.llm_engine import run_llm  # utilise ton LLM (Ollama)
-from app.services.story_seed import load_story_seed_dict, StorySeedError
+from app.services.story_seed import load_story_seed_for_state, StorySeedError
 from app.services.session_intro import prepare_session_intro
 from app.services.round_preparation import prepare_round_assets
 
@@ -46,15 +46,16 @@ ROUND_COOLDOWN = "COOLDOWN"       # fin du mini-jeu, outro, distribution indices
 
 # -------------------- utilitaires --------------------
 
-def _load_plan() -> Dict[str, Any]:
+def _load_plan(game_state: GameState | None = None) -> Dict[str, Any]:
     """Lecture du plan depuis story_seed (fallback session_plan.json)."""
+    target_state = game_state or GAME_STATE
     try:
-        seed = load_story_seed_dict()
-        rounds = seed.get("rounds") or []
-        if rounds:
-            return {"rounds": rounds}
+        seed = load_story_seed_for_state(target_state)
     except StorySeedError:
-        pass
+        seed = {}
+    rounds = seed.get("rounds") or []
+    if rounds:
+        return {"rounds": rounds}
     legacy_path = DATA_DIR / "session_plan.json"
     try:
         if legacy_path.exists():
@@ -152,7 +153,7 @@ class SessionEngine:
     def status(self) -> Dict[str, Any]:
         """Snapshot synthétique pour UI MJ: phase, manche courante/suivante, timer actif."""
         sess = self._state()
-        plan = _load_plan()
+        plan = _load_plan(self.game_state)
         rounds = plan.get("rounds", [])
         idx = sess.get("round_index", 0)
         current = rounds[idx-1] if 1 <= idx <= len(rounds) else None
@@ -169,8 +170,10 @@ class SessionEngine:
             "text": intro_info.get("text"),
             "error": intro_info.get("error"),
         }
+        current_phase = sess.get("round_phase", "UNKNOWN")
         return {
-            "phase": sess["round_phase"],
+            "phase": current_phase,
+            "round_phase": current_phase,
             "round_index": idx,
             "current_round": current,
             "next_round": next_r,
@@ -273,7 +276,7 @@ class SessionEngine:
 
     async def start_next_round(self) -> Dict[str, Any]:
         """Passe au round suivant, annonce l'intro et met en phase INTRO. Ne démarre PAS le jeu physique."""
-        plan = _load_plan()
+        plan = _load_plan(self.game_state)
         rounds = plan.get("rounds", [])
         if not rounds:
             return {"ok": False, "error": "session_plan.json sans rounds"}
@@ -342,7 +345,7 @@ class SessionEngine:
         self.game_state.save()
 
         idx = sess["round_index"]
-        plan = _load_plan()
+        plan = _load_plan(self.game_state)
         r = plan.get("rounds", [])[idx-1]
 
         await _narrate("round_start", f"Le mini-jeu '{r.get('mini_game','?')}' commence.")
@@ -372,7 +375,7 @@ class SessionEngine:
         sess["round_phase"] = ROUND_COOLDOWN
         self.game_state.save()
 
-        plan = _load_plan()
+        plan = _load_plan(self.game_state)
         r = plan.get("rounds", [])[idx-1]
 
         prepared = sess.get("prepared_rounds", {}).get(str(idx)) or {}

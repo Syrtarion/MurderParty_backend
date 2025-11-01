@@ -1,54 +1,51 @@
+from __future__ import annotations
+
 """
 Service: narrative_engine.py
-Rôle:
-- Générer un "canon" minimal (coupable/arme/lieu/mobile) à partir de story_seed.json,
-  puis produire une narration d'introduction (via LLM ou fallback offline).
-- Persister le résultat dans app/data/canon_narratif.json.
 
-Intégrations:
-- run_llm(): moteur LLM (Ollama par défaut) pour l'intro.
-- save_json(): helper générique (services.game_state) pour l'écriture JSON.
+Role:
+- Generate a minimal canon (culprit, weapon, location, motive) from the active story seed.
+- Produce an introduction narrative (LLM or offline fallback).
+- Persist the result into app/data/canon_narratif.json.
 
-Notes:
-- Le choix aléatoire respecte les contraintes `canon_constraints` du seed.
-- `generate_canon_and_intro(use_llm)` est le point d’entrée principal utilisé par /master/intro.
+Integrations:
+- run_llm(): Ollama (or configured LLM) for the intro narrative.
+- save_json(): shared helper to write JSON payloads on disk.
 """
+
 import json
 import random
 from pathlib import Path
+from typing import Dict
+
 from app.services.llm_engine import run_llm
 from app.services.game_state import save_json
+from app.services.story_seed import StorySeedError, load_story_seed_dict
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data"
-STORY_SEED_PATH = DATA_DIR / "story_seed.json"
 CANON_PATH = DATA_DIR / "canon_narratif.json"
 
 
-def load_story_seed() -> dict:
-    """Charge le fichier story_seed.json et surface des erreurs lisibles."""
+def _load_seed() -> Dict[str, object]:
+    """Load the active story seed (default campaign)."""
     try:
-        with open(STORY_SEED_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        # chemin abs → utile en dev pour diagnostiquer la config DATA_DIR
-        raise FileNotFoundError(f"story_seed.json introuvable à {STORY_SEED_PATH}")
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Erreur JSON dans story_seed.json : {e}")
+        return load_story_seed_dict()
+    except StorySeedError as exc:
+        raise RuntimeError(f"Unable to load story_seed.json: {exc}") from exc
 
 
-def generate_random_canon(seed_data: dict) -> dict:
+def generate_random_canon(seed_data: Dict[str, object]) -> Dict[str, object]:
     """
-    Sélectionne aléatoirement le coupable, l'arme, le lieu et le mobile
-    en se basant sur les contraintes du story_seed.
+    Select a culprit, weapon, location and motive while respecting the seed constraints.
     """
-    characters = seed_data.get("characters", [])
-    constraints = seed_data.get("canon_constraints", {})
+    characters = seed_data.get("characters") or []
+    constraints = seed_data.get("canon_constraints") or {}
 
     if not characters:
-        raise ValueError("Aucun personnage défini dans story_seed.json")
+        raise ValueError("story_seed does not define any characters.")
 
-    # Choix aléatoires dans les ensembles proposés
     culprit = random.choice(characters)
+
     possible_weapons = constraints.get("possible_weapons") or ["Un chandelier"]
     possible_locations = constraints.get("possible_locations") or ["le salon"]
     possible_motives = constraints.get("possible_motives") or ["jalousie"]
@@ -58,78 +55,69 @@ def generate_random_canon(seed_data: dict) -> dict:
     motive = random.choice(possible_motives)
 
     canon = {
-        "culprit": culprit["name"],
+        "culprit": culprit.get("name") or culprit.get("id"),
         "weapon": weapon,
         "location": location,
         "motive": motive,
-        "timestamp": None,  # réservé si on veut marquer l'heure du crime
+        "timestamp": None,
     }
     return canon
 
 
-def generate_intro_narrative(canon: dict, seed_data: dict, use_llm: bool = True) -> str:
+def generate_intro_narrative(canon: Dict[str, object], seed_data: Dict[str, object], use_llm: bool = True) -> str:
     """
-    Crée une narration d’introduction basée sur le canon.
-    Si use_llm=True, génère le texte via le modèle LLM configuré (Ollama).
+    Produce an intro narrative based on the generated canon.
     """
-    setting = seed_data.get("setting", {})
-    meta = seed_data.get("meta", {})
+    setting = seed_data.get("setting") or {}
+    meta = seed_data.get("meta") or {}
 
-    # Contexte injecté au prompt pour guider le style/ton
     context = (
-        f"L'histoire se déroule dans {setting.get('location', 'un lieu inconnu')} "
-        f"pendant les {setting.get('epoch', 'années indéterminées')}. "
-        f"Le ton doit être {meta.get('llm_directives', {}).get('tone', 'mystérieux et dramatique')}."
+        f"L'histoire se deroule dans {setting.get('location', 'un lieu inconnu')} "
+        f"pendant {setting.get('epoch', 'une epoque indefinie')}. "
+        f"Le ton doit etre {meta.get('llm_directives', {}).get('tone', 'mysterieux et dramatique')}."
     )
 
     prompt = (
         f"{context}\n\n"
-        f"Un crime vient d'être commis au {canon['location']}. "
-        f"La victime est retrouvée morte, probablement tuée par {canon['weapon']}. "
-        f"Le mobile supposé est : {canon['motive']}. "
+        f"Un crime vient d'etre commis au {canon['location']}. "
+        f"La victime est retrouvée morte, probablement tuee par {canon['weapon']}. "
+        f"Le mobile suppose est : {canon['motive']}. "
         f"Le principal suspect pour l'instant est {canon['culprit']}.\n\n"
-        "Écris une introduction narrative en français, immersive, courte (5 phrases max), "
-        "qui pose l'ambiance sans révéler trop d'éléments du mystère."
+        "Ecris une introduction narrative en francais, immersive, courte (5 phrases max), "
+        "qui pose l'ambiance sans reveler trop d'elements du mystere."
     )
 
     if use_llm:
-        # Appel LLM direct (réponse potentiellement multi-lignes)
         result = run_llm(prompt)
-        text = result.get("text", "").strip()
-        if not text:
-            text = "[Erreur LLM] Aucune réponse reçue."
-    else:
-        # Mode offline / sans LLM (fallback déterministe)
-        text = (
-            f"Un orage gronde au-dessus du manoir. "
-            f"Au matin, le corps d’Henri Delmare est retrouvé dans la {canon['location'].lower()}. "
-            f"Une trace de {canon['weapon'].lower()} laisse présager un drame. "
-            f"Les invités, déconcertés, cherchent à comprendre le mobile de cette affaire — "
-            f"{canon['motive'].lower()}. "
-            f"Les soupçons commencent à se porter sur {canon['culprit']}."
-        )
+        text = (result.get("text") or "").strip()
+        if text:
+            return text
+        return "[Erreur LLM] Aucune reponse recue."
 
-    return text
+    return (
+        "Un orage gronde au-dessus du manoir. "
+        f"Au matin, le corps d'Henri Delmare est retrouve dans la {canon['location'].lower()}. "
+        f"Une trace de {canon['weapon'].lower()} laisse presager un drame. "
+        f"Les invites, deconcertes, cherchent a comprendre le mobile de cette affaire : "
+        f"{canon['motive'].lower()}. "
+        f"Les soupcons commencent a se porter sur {canon['culprit']}."
+    )
 
 
-def generate_canon_and_intro(use_llm: bool = True) -> dict:
+def generate_canon_and_intro(use_llm: bool = True) -> Dict[str, object]:
     """
-    Génère le canon complet (culprit, weapon, location, motive)
-    + narration d’introduction (LLM ou mode offline).
-    Sauvegarde dans canon_narratif.json.
+    Generate the canon and accompanying intro narrative, then persist the payload.
     """
-    seed = load_story_seed()
+    seed = _load_seed()
     canon = generate_random_canon(seed)
     intro_text = generate_intro_narrative(canon, seed, use_llm=use_llm)
 
-    # Ajout de l'intro dans le même fichier canon
     canon["intro_narrative"] = intro_text
     save_json(CANON_PATH, canon)
     return canon
 
 
-# --- Exemple d’utilisation directe ---
 if __name__ == "__main__":
-    print(">> Génération du canon narratif...")
+    print(">> Generation du canon narratif...")
     data = generate_canon_and_intro(use_llm=False)
     print(json.dumps(data, indent=2, ensure_ascii=False))

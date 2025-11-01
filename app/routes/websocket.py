@@ -1,88 +1,128 @@
 # app/routes/websocket.py
 """
-Module routes/websocket.py
-Rôle:
-- Point d'entrée WebSocket unique (ws://.../ws) pour la communication temps réel.
-- Gère l'identification du client (player_id) et un protocole minimal (ping/pong).
+WebSocket endpoints.
 
-Protocole client accepté (tolérant) :
-1) Connexion → le client ouvre ws://<host>/ws
-2) Identification (2 formats supportés) :
-   a) {"type":"identify","player_id":"<id>"}
-   b) {"type":"identify","payload":{"player_id":"<id>"}}
-   - Sans identify valide, la connexion reste "pending" côté WS manager.
-3) Réception push serveur (exemples):
-   - {"type":"secret_mission","mission":{...}}
-   - {"type":"clue","text":"...","kind":"crucial|ambiguous|red_herring"}
-   - {"type":"event","kind":"...","payload":{...}}
-4) Heartbeat:
-   - Client → {"type":"ping"}
-   - Serveur → {"type":"pong"}
-
-Intégrations:
-- WS (ws_manager): centralise les connexions, envoi ciblé/broadcast, mapping ws→player_id.
-
-Robustesse:
-- Messages non-JSON ignorés (continue).
-- En cas de déconnexion, on appelle `WS.disconnect(ws)` pour nettoyer l'état.
+- /ws : canal joueur historique (identification player_id, ping/pong, ACK générique).
+- /ws/session/{session_id} : nouveau flux MJ pour suivre l'état d'une session
+  (phase courante, timer mock, score updates).
 """
 from __future__ import annotations
+
+import asyncio
 import json
 from typing import Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
+from app.services.session_engine import ROUND_ACTIVE
+from app.services.session_store import DEFAULT_SESSION_ID, get_session_engine
 from app.services.ws_manager import WS
 
 router = APIRouter()
 
+
 @router.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     """
-    Boucle de réception/traitement des messages WS côté serveur.
-    - Identifie la socket quand le client envoie {"type":"identify", ...}.
-    - Répond aux pings avec {"type":"pong"}.
-    - Accuse réception pour les autres types avec {"type":"ack", "received": ...}.
+    Boucle d'écoute legacy pour les clients joueurs.
+    - Identification via {"type":"identify","player_id": "..."}.
+    - Ping/pong pour heartbeat.
+    - ACK générique pour les autres types.
     """
-    await WS.connect(ws)  # Enregistre la socket côté manager (état "pending")
+    await WS.connect(ws)
     try:
         while True:
             raw = await ws.receive_text()
             try:
                 msg = json.loads(raw)
             except Exception:
-                # Message invalide (non-JSON) → on l'ignore proprement
+                # Message non JSON -> ignore
                 continue
 
             mtype: str = msg.get("type")
             if mtype == "identify":
-                # Deux formats acceptés :
-                #  - top-level: {"type":"identify","player_id":"..."}
-                #  - payload  : {"type":"identify","payload":{"player_id":"..."}}
                 payload = msg.get("payload") or {}
                 pid: Optional[str] = (msg.get("player_id") or payload.get("player_id") or "").strip()
                 if pid:
                     WS.identify(ws, pid)
-                    # Ack d'identification : cohérent avec l'existant
                     await WS.send_json(ws, {"type": "identified", "player_id": pid})
                 else:
                     await WS.send_json(ws, {"type": "error", "error": "missing player_id"})
-
             elif mtype == "ping":
-                # Heartbeat de vivacité
                 await WS.send_json(ws, {"type": "pong"})
-
             else:
-                # Par défaut: accusé de réception générique
                 await WS.send_json(ws, {"type": "ack", "received": msg})
     except WebSocketDisconnect:
-        # Déconnexion "propre" déclenchée côté client
         pass
     finally:
-        # Nettoyage
         if ws.client_state != WebSocketState.DISCONNECTED:
             await WS.disconnect(ws)
         else:
-            # Si déjà fermé côté client, on nettoie quand même nos registres
             await WS.disconnect(ws)
+
+
+def _normalize_session_id(session_id: Optional[str]) -> str:
+    return (session_id or DEFAULT_SESSION_ID).strip() or DEFAULT_SESSION_ID
+
+
+@router.websocket("/ws/session/{session_id}")
+async def websocket_session_stream(ws: WebSocket, session_id: str):
+    """
+    Flux minimal pour les dashboards MJ.
+    Diffuse périodiquement :
+      - la phase courante (type=phase)
+      - un tick timer mock (type=timer_tick)
+      - les events score_update du journal (type=score_update)
+    """
+    normalized = _normalize_session_id(session_id)
+    engine = get_session_engine(normalized)
+    await ws.accept()
+    last_event_index = len(engine.game_state.events)
+
+    async def _send_json(payload: dict):
+        text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        await ws.send_text(text)
+
+    await _send_json({"type": "session_state", "session_id": normalized, "payload": engine.status()})
+
+    try:
+        while True:
+            await asyncio.sleep(1.0)
+            status = engine.status()
+            await _send_json(
+                {
+                    "type": "phase",
+                    "session_id": normalized,
+                    "phase": status["round_phase"],
+                    "round_index": status["round_index"],
+                }
+            )
+            await _send_json(
+                {
+                    "type": "timer_tick",
+                    "session_id": normalized,
+                    "active": status["round_phase"] == ROUND_ACTIVE,
+                    "has_timer": status.get("has_timer", False),
+                }
+            )
+
+            events = engine.game_state.events
+            if len(events) > last_event_index:
+                for event in events[last_event_index:]:
+                    if event.get("kind") == "score_update":
+                        await _send_json(
+                            {
+                                "type": "score_update",
+                                "session_id": normalized,
+                                "payload": event.get("payload", {}),
+                            }
+                        )
+                last_event_index = len(events)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        try:
+            await ws.close()
+        except Exception:
+            pass

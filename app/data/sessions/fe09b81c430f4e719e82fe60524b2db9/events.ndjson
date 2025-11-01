@@ -1,0 +1,4 @@
+{"id": "880f73dc-c0d6-4aa9-86a8-0aaec99b449e", "kind": "teams_drawn", "scope": "system", "payload": {"team_count": 2, "participants": 4}, "ts": 1762019100.0458572}
+{"id": "8bb1612f-4d39-4930-91e4-f2d9cf2f24a0", "kind": "round_prepared", "scope": "system", "payload": {"round_index": 1}, "ts": 1762019100.0528555}
+{"id": "35ccefb0-06f2-4dd6-b5ac-d91dcc2d2684", "kind": "round_closed", "scope": "system", "payload": {"round_index": 1, "winners": ["p1"]}, "ts": 1762019108.369586}
+{"id": "7926a598-77ea-4e2a-9383-d81aa88ef340", "kind": "session_submitted", "scope": "system", "payload": {"scores_count": 2, "finalize": true}, "ts": 1762019108.3755872}

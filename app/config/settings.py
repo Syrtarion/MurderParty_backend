@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     # Répertoire des fichiers persistés (JSON de runtime, seeds, etc.)
     # Par défaut: <repo>/app/data
     DATA_DIR: str = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+    DEFAULT_CAMPAIGN: str = "default"
 
     # Paramétrage pydantic-settings :
     # - lit le fichier .env (UTF-8) si présent

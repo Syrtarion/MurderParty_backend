@@ -8,12 +8,12 @@ is used which preserves legacy behaviour.
 from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Tuple
-import json
 import heapq
 import re
-from pathlib import Path
 
 from app.services.game_state import GAME_STATE, GameState
+from app.config.settings import settings
+from app.services.story_seed import StorySeedError, load_story_seed_for_state, get_story_seed_path
 
 
 IMPORTANCE_ORDER = {"high": 0, "medium": 1, "low": 2}
@@ -35,37 +35,6 @@ def _players_list(game_state: GameState | None = None) -> List[Dict[str, Any]]:
     return list(state.players.values())
 
 
-def _app_root() -> Path:
-    return Path(__file__).resolve().parents[1]
-
-
-def _seed_default_path() -> str:
-    """
-    Resolve the default story seed path with optional override from settings.
-    Priority:
-      1. settings.STORY_SEED_PATH (if provided)
-      2. app/data/story_seed.json
-    """
-    try:
-        from app.config.settings import settings  # type: ignore
-
-        target = getattr(settings, "STORY_SEED_PATH", None)
-        if target:
-            return str(Path(str(target)).expanduser().resolve())
-    except Exception:
-        pass
-    return str((_app_root() / "data" / "story_seed.json").resolve())
-
-
-def _load_seed_from_disk() -> Dict[str, Any]:
-    path = _seed_default_path()
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            return json.load(handle) or {}
-    except Exception:
-        return {}
-
-
 def _get_seed_live(game_state: GameState | None = None) -> Dict[str, Any]:
     """
     Reading priority:
@@ -73,10 +42,11 @@ def _get_seed_live(game_state: GameState | None = None) -> Dict[str, Any]:
       2. fallback to the JSON file on disk.
     """
     state = _resolve_state(game_state)
-    seed_mem = state.state.get("story_seed")
-    if isinstance(seed_mem, dict) and seed_mem:
-        return seed_mem
-    return _load_seed_from_disk()
+    try:
+        seed = load_story_seed_for_state(state)
+    except StorySeedError:
+        seed = {}
+    return seed if isinstance(seed, dict) else {}
 
 
 def _envs_from_seed(game_state: GameState | None = None) -> List[Dict[str, Any]]:
@@ -151,8 +121,9 @@ def reset_envelope_assignments(game_state: GameState | None = None) -> Dict[str,
     state = _resolve_state(game_state)
     seed = state.state.get("story_seed")
     if not isinstance(seed, dict) or not seed:
-        seed = _load_seed_from_disk()
-        state.state["story_seed"] = seed
+        seed = _get_seed_live(game_state)
+        if not seed:
+            return {"ok": False, "reason": "story_seed_unavailable"}
 
     envs = seed.get("envelopes") or []
     for env in envs:
@@ -181,9 +152,15 @@ def summary_for_mj(
     if isinstance(mem_seed, dict) and mem_seed.get("envelopes"):
         envs = mem_seed.get("envelopes") or []
     else:
-        envs = _load_seed_from_disk().get("envelopes") or []
-        source = "disk"
-        seed_path = _seed_default_path()
+        try:
+            seed = load_story_seed_for_state(state, refresh=True)
+        except StorySeedError:
+            seed = {}
+        envs = seed.get("envelopes") or []
+        if envs:
+            source = "disk"
+            campaign = state.state.get("campaign_id") or settings.DEFAULT_CAMPAIGN
+            seed_path = str(get_story_seed_path(campaign))
 
     total = len(envs)
     assigned = len([env for env in envs if env.get("assigned_player_id")])
@@ -227,10 +204,7 @@ def distribute_envelopes_equitable(game_state: GameState | None = None) -> Dict[
     if not players:
         return {"assigned": 0, "left": 0, "per_player": {}}
 
-    seed = state.state.get("story_seed")
-    if not isinstance(seed, dict) or not seed:
-        seed = _load_seed_from_disk()
-        state.state["story_seed"] = seed
+    seed = _get_seed_live(game_state)
 
     envs = seed.get("envelopes") or []
     for env in envs:
@@ -307,10 +281,7 @@ def assign_envelope_to_player(
     Returns the previous owner if any.
     """
     state = _resolve_state(game_state)
-    seed = state.state.get("story_seed")
-    if not isinstance(seed, dict) or not seed:
-        seed = _load_seed_from_disk()
-        state.state["story_seed"] = seed
+    seed = _get_seed_live(game_state)
 
     envs = seed.get("envelopes") or []
     target_id = _normalize_id(envelope_id)

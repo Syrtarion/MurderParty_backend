@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Header, Query
@@ -28,6 +29,12 @@ from app.services.envelopes import (
     reset_envelope_assignments,
     player_envelopes,
     assign_envelope_to_player,
+)
+from app.services.story_seed import (
+    StorySeedError,
+    get_story_seed_path,
+    load_story_seed_dict,
+    load_story_seed_for_state,
 )
 
 
@@ -260,17 +267,6 @@ async def envelopes_reset(session_id: Optional[str] = Query(default=None)):
     return res
 
 
-def _seed_default_path() -> str:
-    try:
-        if getattr(settings, "STORY_SEED_PATH", None):
-            return str(settings.STORY_SEED_PATH)
-    except Exception:
-        pass
-    from pathlib import Path
-
-    return str((Path(__file__).resolve().parents[1] / "data" / "story_seed.json").resolve())
-
-
 @router.post("/seed/reload")
 async def seed_reload(
     path: Optional[str] = None,
@@ -279,21 +275,29 @@ async def seed_reload(
     sid = _normalize_session_id(session_id)
     state = get_session_state(sid)
 
-    seed_path = path or _seed_default_path()
-    if not os.path.exists(seed_path):
-        raise HTTPException(404, f"Seed file not found: {seed_path}")
+    if path:
+        target = Path(path).expanduser().resolve()
+        if not target.exists():
+            raise HTTPException(status_code=404, detail=f"Seed file not found: {target}")
+        try:
+            seed = load_story_seed_dict(path=target)
+        except StorySeedError as exc:
+            raise HTTPException(status_code=500, detail=f"Seed reload failed: {exc}") from exc
+        seed_path = str(target)
+    else:
+        try:
+            seed = load_story_seed_for_state(state, refresh=True)
+        except StorySeedError as exc:
+            raise HTTPException(status_code=500, detail=f"Seed reload failed: {exc}") from exc
+        campaign = state.state.get("campaign_id") or settings.DEFAULT_CAMPAIGN
+        seed_path = str(get_story_seed_path(campaign))
 
-    try:
-        with open(seed_path, "r", encoding="utf-8") as handle:
-            seed = json.load(handle)
-        state.state["story_seed"] = seed
-        state.log_event(
-            "seed_reloaded",
-            {"path": seed_path, "envelopes_count": len(seed.get("envelopes", []))},
-        )
-        state.save()
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Seed reload failed: {exc}") from exc
+    state.state["story_seed"] = seed
+    state.log_event(
+        "seed_reloaded",
+        {"path": seed_path, "envelopes_count": len(seed.get("envelopes", []))},
+    )
+    state.save()
 
     _broadcast_session_event(state, "event", {"kind": "seed_reloaded"}, sid)
     return {"ok": True, "path": seed_path, "envelopes_count": len(seed.get("envelopes", []))}

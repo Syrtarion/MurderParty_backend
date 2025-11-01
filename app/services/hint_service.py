@@ -5,7 +5,7 @@ from typing import Any, Dict, List
 from uuid import uuid4
 
 from app.services.game_state import GameState
-from app.services.story_seed import load_story_seed_dict, StorySeedError
+from app.services.story_seed import StorySeedError, load_story_seed_for_state
 from app.services.ws_manager import ws_send_type_to_player_safe, ws_broadcast_type_safe
 
 
@@ -27,9 +27,9 @@ def _get_hints_map(prepared: Dict[str, Any]) -> Dict[str, str]:
     return {str(k): str(v) for k, v in hints_map.items()}
 
 
-def _load_sharing_rules(round_index: int) -> Dict[str, Any]:
+def _load_sharing_rules(game_state: GameState, round_index: int) -> Dict[str, Any]:
     try:
-        seed = load_story_seed_dict()
+        seed = load_story_seed_for_state(game_state)
     except StorySeedError:
         return {}
     rounds = seed.get("rounds") or []
@@ -66,9 +66,9 @@ def _resolve_other_tier(
     return discoverer_tier
 
 
-def _get_destroy_quota() -> int:
+def _get_destroy_quota(game_state: GameState) -> int:
     try:
-        seed = load_story_seed_dict()
+        seed = load_story_seed_for_state(game_state)
     except StorySeedError:
         return 0
     killer_rules = (seed.get("rules") or {}).get("killer") or {}
@@ -96,7 +96,7 @@ def deliver_hint(
     if tier not in hints_map:
         raise ValueError("Requested tier not available")
 
-    sharing_rules = _load_sharing_rules(round_index)
+    sharing_rules = _load_sharing_rules(game_state, round_index)
     other_tier = _resolve_other_tier(tier, share, hints_map, sharing_rules)
 
     deliveries: List[Dict[str, Any]] = []
@@ -174,7 +174,7 @@ def destroy_hint(game_state: GameState, hint_id: str, killer_id: str) -> Dict[st
     if culprit_id and killer_id != culprit_id:
         raise ValueError("Only the killer can destroy hints")
 
-    quota = _get_destroy_quota()
+    quota = _get_destroy_quota(game_state)
     actions = game_state.state.setdefault("killer_actions", {"destroy_used": 0})
     used = int(actions.get("destroy_used", 0))
     if quota and used >= quota:

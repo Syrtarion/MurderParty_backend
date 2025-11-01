@@ -28,7 +28,7 @@ from app.services.game_state import GAME_STATE
 from app.services.narrative_core import NARRATIVE
 from app.services.ws_manager import WS
 from app.config.settings import settings
-from app.services.story_seed import load_story_seed_dict, StorySeedError
+from app.services.story_seed import StorySeedError, load_story_seed_for_state
 
 DATA_DIR = Path(settings.DATA_DIR)
 
@@ -134,7 +134,7 @@ class MJEngine:
         players = GAME_STATE.players or {}
         phase = self.phase()
         try:
-            seed = load_story_seed_dict()
+            seed = load_story_seed_for_state(GAME_STATE)
             rounds = seed.get("rounds") or []
         except StorySeedError:
             rounds = []
@@ -151,7 +151,7 @@ class MJEngine:
     async def _assign_envelopes_equitable(self) -> Dict[str, List[int]]:
         """Répartit équitablement les enveloppes à cacher entre les joueurs (round-robin) et notifie via WS."""
         try:
-            seed = load_story_seed_dict()
+            seed = load_story_seed_for_state(GAME_STATE)
         except StorySeedError:
             seed = {}
         envelopes = seed.get("envelopes", [])

@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import json
 import random
-from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -17,25 +16,14 @@ from app.services.llm_engine import run_llm
 from app.services.narrative_core import NARRATIVE
 from app.services.session_store import DEFAULT_SESSION_ID, get_session_state
 from app.services.game_state import register_event
+from app.services.story_seed import StorySeedError, load_story_seed_for_state
 
 
 router = APIRouter(prefix="/master", tags=["master"], dependencies=[Depends(mj_required)])
 
-SEED_PATH = Path("app/data/story_seed.json")
-
 
 class CanonRequest(BaseModel):
     style: Optional[str] = None
-
-
-def load_seed() -> dict:
-    if SEED_PATH.exists():
-        try:
-            with open(SEED_PATH, "r", encoding="utf-8") as handle:
-                return json.load(handle)
-        except Exception:
-            return {}
-    return {}
 
 
 def _normalize_session_id(session_id: Optional[str]) -> str:
@@ -55,7 +43,11 @@ async def generate_canon(
     sid = _normalize_session_id(session_id)
     state = get_session_state(sid)
 
-    seed = load_seed()
+    try:
+        seed = load_story_seed_for_state(state)
+    except StorySeedError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
     prompt = f"""
 Tu es le moteur narratif d'une Murder Party.
 

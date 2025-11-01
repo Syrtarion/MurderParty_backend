@@ -26,7 +26,7 @@ Notes:
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Dict, Any
 
 from app.deps.auth import mj_required
@@ -157,20 +157,65 @@ async def roles_assign():
         raise HTTPException(500, f"roles_assign failed: {e}")
 
 
+async def _transition_session_active(*, enforce_locked: bool, use_llm_intro: bool) -> dict:
+    """
+    Mutualise la logique de lancement de session.
+    - enforce_locked : exige que join_locked soit vrai avant de lancer.
+    - use_llm_intro : drapeau conservé pour le pipeline d'intro automatisé (future PR).
+    """
+    if enforce_locked and not GAME_STATE.state.get("join_locked", False):
+        raise HTTPException(status_code=409, detail="Verrouillez les inscriptions avant de démarrer la session.")
+
+    phase = "SESSION_ACTIVE"
+    GAME_STATE.state["phase_label"] = phase
+    GAME_STATE.state["started"] = True
+    GAME_STATE.log_event(
+        "session_launch",
+        {"phase": phase, "enforce_locked": enforce_locked, "use_llm_intro": use_llm_intro},
+    )
+    GAME_STATE.log_event("phase_change", {"phase": phase})
+    GAME_STATE.save()
+
+    await WS.broadcast_type("event", {"kind": "phase_change", "phase": phase})
+
+    payload = {"ok": True, "phase": phase}
+    if enforce_locked:
+        payload["use_llm_intro"] = use_llm_intro
+    return payload
+
+
 @router.post("/session_start")
 async def session_start():
     """
     Passe la partie en SESSION_ACTIVE (début du jeu libre).
+    Conservé pour compatibilité, sans imposer le verrouillage préalable.
     """
     try:
-        phase = "SESSION_ACTIVE"
-        GAME_STATE.state["phase_label"] = phase
-        GAME_STATE.log_event("phase_change", {"phase": phase})
-        GAME_STATE.save()
-        await WS.broadcast_type("event", {"kind": "phase_change", "phase": phase})
-        return {"ok": True, "phase": phase}
+        return await _transition_session_active(enforce_locked=False, use_llm_intro=True)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, f"Cannot start session: {e}")
+
+
+@router.post("/launch")
+async def party_launch(
+    use_llm_intro: bool = Query(
+        default=True,
+        description="Préparer automatiquement l'introduction via LLM avant de lancer la session.",
+    ),
+):
+    """
+    Endpoint principal pour le bouton "Démarrer la partie" (front MJ).
+    - Exige que les inscriptions soient verrouillées.
+    - Passe la partie en SESSION_ACTIVE.
+    """
+    try:
+        return await _transition_session_active(enforce_locked=True, use_llm_intro=use_llm_intro)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Cannot launch party: {e}")
 
 
 @router.get("/status")

@@ -42,7 +42,7 @@ def _default_state() -> Dict[str, Any]:
     return {
         "phase": 1,
         "started": False,
-        "campaign_id": None,
+        "campaign_id": settings.DEFAULT_CAMPAIGN,
         "last_awards": {},
         "phase_label": "WAITING_START",
         "join_locked": False,

@@ -1,0 +1,35 @@
+{"id": "56754d36-2017-4060-a8ab-15e52f618b32", "kind": "party_started", "scope": "system", "payload": {"phase": "JOIN", "join_locked": false}, "ts": 1762017984.7703185}
+{"id": "0ce97223-0c62-4a36-9747-239e73c1c5b6", "kind": "player_join", "scope": "system", "payload": {"player_id": "95c287e7-a66c-40e0-800d-d86393faee20", "display_name": "marion"}, "ts": 1762017992.2468398}
+{"id": "38778a0b-afc2-4c99-8cb2-0afb83e7ec8f", "kind": "player_register", "scope": "system", "payload": {"player_id": "95c287e7-a66c-40e0-800d-d86393faee20", "display_name": "marion", "character": null, "session_id": "74ef96aad3134d28a991f6981e8610f7"}, "ts": 1762017992.2948594}
+{"id": "56f1cfc9-5d5b-4465-95d9-ed8080ce5c6d", "kind": "player_join", "scope": "system", "payload": {"player_id": "8e2e1483-11d6-4914-99d6-eea95df27be2", "display_name": "morgan"}, "ts": 1762017998.1151652}
+{"id": "b7c2040c-a80e-4e41-802f-0552c718a75d", "kind": "player_register", "scope": "system", "payload": {"player_id": "8e2e1483-11d6-4914-99d6-eea95df27be2", "display_name": "morgan", "character": null, "session_id": "74ef96aad3134d28a991f6981e8610f7"}, "ts": 1762017998.162682}
+{"id": "dc658621-3151-4ff0-a417-510513be4889", "kind": "player_join", "scope": "system", "payload": {"player_id": "824b5d4d-170a-437b-848e-e1f2e65c9963", "display_name": "pixel"}, "ts": 1762018002.8066392}
+{"id": "a8c88ec1-347b-4097-9252-34c4484a1cc0", "kind": "player_register", "scope": "system", "payload": {"player_id": "824b5d4d-170a-437b-848e-e1f2e65c9963", "display_name": "pixel", "character": null, "session_id": "74ef96aad3134d28a991f6981e8610f7"}, "ts": 1762018002.8554528}
+{"id": "316d963b-fff2-406a-a80c-6299a50dd109", "kind": "join_locked", "scope": "system", "payload": {}, "ts": 1762018133.1106298}
+{"id": "11acd554-d3f5-4907-999c-ba9c9f2a9ac3", "kind": "phase_change", "scope": "system", "payload": {"phase": "ENVELOPES_DISTRIBUTION"}, "ts": 1762018133.112629}
+{"id": "787b36dc-05f3-4736-a5ae-28e34b07a7e6", "kind": "envelopes_distributed", "scope": "system", "payload": {"assigned": 4, "left": 0, "per_player": {"95c287e7-a66c-40e0-800d-d86393faee20": 2, "8e2e1483-11d6-4914-99d6-eea95df27be2": 1, "824b5d4d-170a-437b-848e-e1f2e65c9963": 1}}, "ts": 1762018133.1146271}
+{"id": "ffbf375d-3098-4dfe-831b-3e446094809c", "kind": "join_locked", "scope": "system", "payload": {}, "ts": 1762018530.338866}
+{"id": "b4bb3b7e-3c49-4764-9a2e-c1b031121260", "kind": "phase_change", "scope": "system", "payload": {"phase": "ENVELOPES_DISTRIBUTION"}, "ts": 1762018530.3398693}
+{"id": "fbc6c000-72f4-4ce8-85a7-34d2f381f47f", "kind": "envelopes_distributed", "scope": "system", "payload": {"assigned": 0, "left": 0, "per_player": {"95c287e7-a66c-40e0-800d-d86393faee20": 2, "8e2e1483-11d6-4914-99d6-eea95df27be2": 1, "824b5d4d-170a-437b-848e-e1f2e65c9963": 1}}, "ts": 1762018530.3423882}
+{"id": "1923b3ee-7c82-422d-a937-afee48ffdde8", "kind": "party_started", "scope": "system", "payload": {"phase": "JOIN", "join_locked": false}, "ts": 1762018535.4687076}
+{"id": "03fe38e9-4dd6-4168-9c70-cbc95b423e22", "kind": "join_locked", "scope": "system", "payload": {}, "ts": 1762018536.1742494}
+{"id": "334b4b4e-947c-4fc6-9420-93bf6f0ae2f9", "kind": "phase_change", "scope": "system", "payload": {"phase": "ENVELOPES_DISTRIBUTION"}, "ts": 1762018536.1752534}
+{"id": "a875c5f5-4e10-484c-a2b6-5e30a01c8070", "kind": "envelopes_distributed", "scope": "system", "payload": {"assigned": 0, "left": 0, "per_player": {"95c287e7-a66c-40e0-800d-d86393faee20": 2, "8e2e1483-11d6-4914-99d6-eea95df27be2": 1, "824b5d4d-170a-437b-848e-e1f2e65c9963": 1}}, "ts": 1762018536.1777735}
+{"id": "58ae2d6e-19ce-4597-90ab-6b657deebf40", "kind": "join_locked", "scope": "system", "payload": {}, "ts": 1762018584.4163053}
+{"id": "83c513e5-7742-435d-9cfb-7f7c6104a3a3", "kind": "phase_change", "scope": "system", "payload": {"phase": "ENVELOPES_DISTRIBUTION"}, "ts": 1762018584.4174175}
+{"id": "0a8a23b2-3b17-4bfd-9e33-6f403802586c", "kind": "envelopes_distributed", "scope": "system", "payload": {"assigned": 0, "left": 0, "per_player": {"95c287e7-a66c-40e0-800d-d86393faee20": 2, "8e2e1483-11d6-4914-99d6-eea95df27be2": 1, "824b5d4d-170a-437b-848e-e1f2e65c9963": 1}}, "ts": 1762018584.4195814}
+{"id": "3c364c63-a75e-4959-86ea-57a29e6d9ba2", "kind": "phase_change", "scope": "system", "payload": {"phase": "ENVELOPES_HIDDEN"}, "ts": 1762018724.7631116}
+{"id": "844b1deb-091b-42b7-82e4-28f2462f3cca", "kind": "roles_assigned", "scope": "system", "payload": {"killer_player_id": "8e2e1483-11d6-4914-99d6-eea95df27be2"}, "ts": 1762018788.8809428}
+{"id": "2d2b5f74-dc9d-4025-9a1a-66aa76fefd6b", "kind": "phase_change", "scope": "system", "payload": {"phase": "ROLES_ASSIGNED"}, "ts": 1762018788.8824482}
+{"id": "04e235a2-70ab-4d4a-898c-73b29d030e43", "kind": "ws_role_reveal_sent", "scope": "system", "payload": {"player_id": "824b5d4d-170a-437b-848e-e1f2e65c9963", "role": "innocent"}, "ts": 1762018788.8844538}
+{"id": "aa882273-24d0-4f1d-b760-33bb0113acf5", "kind": "ws_mission_sent", "scope": "system", "payload": {"player_id": "824b5d4d-170a-437b-848e-e1f2e65c9963", "mission_title": null}, "ts": 1762018788.885454}
+{"id": "8387a5b0-32b6-49a3-a2d6-2cf39bfaddea", "kind": "ws_role_reveal_sent", "scope": "system", "payload": {"player_id": "8e2e1483-11d6-4914-99d6-eea95df27be2", "role": "killer"}, "ts": 1762018788.8864534}
+{"id": "18d62714-a001-40ff-9010-8bbc716e1278", "kind": "ws_mission_sent", "scope": "system", "payload": {"player_id": "8e2e1483-11d6-4914-99d6-eea95df27be2", "mission_title": null}, "ts": 1762018788.887454}
+{"id": "4f5fd236-d308-47ce-a79e-c1c44dae2dd7", "kind": "ws_role_reveal_sent", "scope": "system", "payload": {"player_id": "95c287e7-a66c-40e0-800d-d86393faee20", "role": "innocent"}, "ts": 1762018788.888454}
+{"id": "dc6f2e51-129f-47cb-8a95-0d7da230fa91", "kind": "ws_mission_sent", "scope": "system", "payload": {"player_id": "95c287e7-a66c-40e0-800d-d86393faee20", "mission_title": null}, "ts": 1762018788.8894541}
+{"id": "53e970ca-0741-4a61-9b86-93713f7f9f16", "kind": "session_intro_prepared", "scope": "system", "payload": {"prepared_at": 1762018819.4280727, "title": "Prologue"}, "ts": 1762018819.4296064}
+{"id": "7342990e-8aae-4416-b0dc-3d688c44a54f", "kind": "session_intro_confirmed", "scope": "system", "payload": {"confirmed_at": 1762018819.4316075}, "ts": 1762018819.4326074}
+{"id": "55d8a8f6-e04e-49a8-8980-f45487abfab7", "kind": "round_prepared", "scope": "system", "payload": {"round_index": 1}, "ts": 1762018858.1455283}
+{"id": "bbc7e99a-4596-4113-b0a2-a158bdee1997", "kind": "round_closed", "scope": "system", "payload": {"round_index": 1, "winners": ["824b5d4d-170a-437b-848e-e1f2e65c9963"]}, "ts": 1762018892.237192}
+{"id": "6f148948-e023-4c01-ab7f-368435743b0c", "kind": "session_submitted", "scope": "system", "payload": {"scores_count": 3, "finalize": false}, "ts": 1762018892.2472107}
+{"id": "5b38a1ba-0d7d-40b2-bf43-fa43dbd82fcb", "kind": "round_prepared", "scope": "system", "payload": {"round_index": 2}, "ts": 1762018912.5943685}
